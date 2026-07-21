@@ -1,56 +1,86 @@
 # Architecture
 
-## Scope
+`s3-wire` keeps the public API small and the wire implementation private. Applications work with typed configuration, operations, streams, and errors; HTTP and XML types do not leak into their code.
 
-`s3-wire` is one reusable library crate. Its public API describes S3 operations, configuration, credentials, object keys, streams, retries, and errors. HTTP and XML implementation types remain internal so applications are not coupled to the current transport.
+## At a glance
 
-## Module boundaries
+| Layer | Responsibility |
+| --- | --- |
+| `config` | Validate endpoints, addressing, credentials, timeouts, retries, response limits, and multipart bounds |
+| `operation` | Define public requests, responses, object keys, conditions, checksums, listings, and multipart state |
+| `endpoint` | Build exact path-style or virtual-hosted request targets without applying filesystem semantics to keys |
+| `signing` | Produce SigV4 canonical requests, authorization headers, and presigned query strings |
+| `transport` | Send HTTP/1.1 or HTTP/2 requests through Rustls and adapt response bodies into streams |
+| `protocol` | Serialize and parse bounded S3 XML documents while rejecting DTD and entity declarations |
+| `retry` | Classify failures and calculate bounded backoff with jitter and `Retry-After` support |
+| `stream` | Model replayable and one-shot uploads plus backpressured, integrity-checked downloads |
+| `client` | Join the layers, enforce deadlines, classify responses, and orchestrate retries and multipart uploads |
 
-- `client` maps typed operations to signed HTTP requests, enforces deadlines, classifies responses, and owns retry and multipart orchestration.
-- `config` validates endpoints, addressing, timeouts, response limits, retry policy, and multipart memory bounds before a request is sent.
-- `credentials` defines the async provider interface and implements static, environment, and expiration-aware cached providers.
-- `endpoint` constructs exact request targets. Object-key bytes have no filesystem semantics; repeated slashes and dot segments are preserved and encoded for S3.
-- `operation` contains public request, response, object-key, checksum, condition, listing, and multipart state types.
-- `signing` produces SigV4 canonical requests, header signatures, and presigned query strings independently of the transport.
-- `protocol` serializes and parses bounded S3 XML documents. Remote XML is rejected before deserialization if it declares a DTD or entity.
-- `retry` calculates bounded exponential backoff with jitter and honors valid `Retry-After` values within the operation deadline.
-- `stream` implements replay-aware upload bodies and backpressured response bodies with length, timeout, and supported checksum verification.
-- `transport` owns the Hyper client, Rustls configuration, connection timeout, and HTTP response stream adaptation.
+Only `client`, `config`, `credentials`, `endpoint`, `error`, `operation`, `retry`, and `stream` are public modules.
 
-## Request lifecycle
+## Request flow
 
-1. Configuration and operation types validate local input.
-2. The endpoint module builds an exact target for path-style or virtual-hosted addressing.
-3. A credential provider supplies non-expired credentials.
-4. The signing module hashes the payload description and signs the method, target, query, and selected headers.
-5. The Hyper transport sends the request through Rustls for HTTPS endpoints.
-6. The client parses success metadata or a bounded S3 error document and assigns a structured error category.
-7. A retry occurs only when classification, elapsed time, attempt count, and body replayability all permit it. Each attempt is re-signed.
+Every operation follows the same path:
 
-The transport does not automatically follow redirects. A region correction is accepted only for standard HTTPS AWS S3 endpoints and is reconstructed from a validated region response before the request is re-signed. Custom-endpoint redirects are returned as errors without forwarding signed headers.
+1. Configuration and request types reject invalid local input.
+2. `endpoint` builds the exact URL for the configured addressing style.
+3. The credential provider supplies non-expired credentials.
+4. `signing` hashes the payload description and signs the method, target, query, and selected headers.
+5. `transport` sends the request, using Rustls for HTTPS.
+6. `client` parses success metadata or a bounded S3 error document into a structured result.
+7. A retry happens only when the failure classification, deadline, attempt budget, and body replayability all allow it. Each attempt is signed again.
 
-## Transfer and ownership model
+The transport never follows redirects automatically. Region correction is accepted only for standard AWS S3 HTTPS endpoints. The client validates the returned region, reconstructs the endpoint, and re-signs the request. Redirects from custom endpoints are returned as errors so signed headers are not forwarded elsewhere.
 
-`ByteStream::from_bytes` hashes retained bytes and can replay them. `ByteStream::from_path` copies a regular file into a read-only private temporary file while hashing, then opens that snapshot for each attempt. `ByteStream::from_stream` receives an exact length and SHA-256 digest from the caller and can be consumed once; the client does not buffer it or retry it.
+## Upload ownership
 
-`ResponseStream` yields chunks with backpressure. It enforces declared content length, idle-body timeout, overall deadline, and a returned full-object SHA-256 checksum when present. Dropping a response stops further body work because there is no detached download task.
+The upload source determines whether a request can be replayed:
 
-Managed multipart sources are replayable bytes or immutable file snapshots. Part size, concurrency, and total in-flight part bytes are validated together. A client-owned task keeps the upload ID once creation succeeds. Dropping the public future signals cancellation; the owned task cancels outstanding parts and attempts abort. Normal failures wait for abort and preserve an abort failure as `S3Error::cleanup_failure`.
+| Source | Ownership and retry behavior |
+| --- | --- |
+| `ByteStream::from_bytes` | Retains and hashes the bytes; every attempt reads the same value |
+| `ByteStream::from_path` | Hashes a regular file into a private, read-only temporary snapshot; every attempt reopens that snapshot |
+| `ByteStream::from_stream` | Takes an exact length and SHA-256 digest; the stream is consumed once and is never retried |
 
-Multipart selection is a caller policy. The configuration retains a validated `multipart_threshold`, but `put_object` does not automatically change operation type; callers invoke `multipart_upload` explicitly.
+The client does not silently buffer a one-shot stream. File replay uses disk rather than memory, so operators must size and protect the process temporary directory.
 
-## Dependency decisions
+## Download ownership
 
-- Tokio supplies the async runtime, file I/O, timers, synchronization, and cancellation integration used by applications in scope.
-- Hyper and `hyper-util` provide HTTP/1.1 and HTTP/2 without exposing their types publicly. Redirect behavior remains under client control.
-- Rustls and `hyper-rustls` provide TLS with WebPKI roots and no native TLS dependency. Certificate verification is not configurable off.
-- `quick-xml` with Serde supports focused S3 documents; a separate pre-scan rejects DTD and entity syntax and every remote document has a configured byte bound.
-- `sha2`, `hmac`, `md-5`, `base64`, `subtle`, and `zeroize` cover signing, protocol integrity fields, constant-time comparisons, and key-material cleanup without a general cryptographic framework.
-- `secrecy` makes credential and presigned-URL exposure explicit and redacts standard formatting.
-- `tempfile` provides owned disk snapshots for replayable file transfers and cleanup on drop.
+`ResponseStream` yields chunks only as the caller consumes them. While streaming, it enforces:
 
-Default features are disabled where the selected dependency would otherwise bring unused TLS or runtime implementations. Comparison clients are isolated under `comparisons/` and are not dependencies of the published crate.
+- declared content length;
+- idle-body timeout;
+- overall operation deadline; and
+- a returned full-object SHA-256 checksum, when present.
 
-## Public API evolution
+Dropping the response stops body work; there is no detached download task. The caller must reach EOF before treating length or checksum verification as complete.
 
-The credential provider trait is transport-independent so metadata, workload-identity, or external refresh implementations can be added by applications without changing `S3Client`. Additional S3 operations should be represented by typed requests and outputs and should reuse the same endpoint, signing, limit, deadline, and error paths.
+## Multipart ownership
+
+Managed multipart accepts replayable bytes or a file snapshot. `multipart_part_size`, `multipart_concurrency`, and `max_multipart_in_flight_bytes` are validated together before the upload starts.
+
+After S3 creates an upload, a client-owned task retains the upload ID. If the public future is dropped, that task cancels outstanding parts and attempts `AbortMultipartUpload`. A normal failure waits for abort; if abort also fails, `S3Error::cleanup_failure()` preserves the cleanup error beside the primary error.
+
+Multipart selection remains application policy. `multipart_threshold` is validated configuration that callers may use, but `put_object` never changes operation type automatically.
+
+## Dependency choices
+
+- Tokio provides the runtime, timers, synchronization, cancellation integration, and async file I/O.
+- Hyper and `hyper-util` provide HTTP without becoming part of the public API.
+- Rustls and `hyper-rustls` provide TLS with WebPKI roots; certificate verification cannot be disabled.
+- `quick-xml` and Serde handle the focused XML documents used by supported operations.
+- `sha2`, `hmac`, `md-5`, `base64`, `subtle`, and `zeroize` cover signing, integrity fields, constant-time comparisons, and key-material cleanup.
+- `secrecy` makes credential and presigned-URL exposure explicit.
+- `tempfile` owns replay snapshots and deletes them on drop.
+
+Unused default features are disabled where practical. Comparison clients live under `comparisons/` and are not dependencies of the published crate.
+
+## Extending the client
+
+New operations should use typed public requests and responses, then reuse the existing endpoint, signing, deadline, response-limit, error, and retry paths. New credential sources can implement the transport-independent `CredentialsProvider` trait without changing `S3Client`.
+
+Changes should preserve three invariants:
+
+- remote input is bounded and never trusted;
+- a retry is impossible unless the request body is provably replayable; and
+- values containing credentials or signing material remain redacted by default.
