@@ -88,16 +88,19 @@ jobs:
         run: cargo test --locked --all-targets --all-features
 
   s3-compat:
-    name: ${{ matrix.provider }} compatibility
+    name: ${{ matrix.label }} compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        provider:
-          - minio
-          - rustfs
-          - seaweedfs
+        include:
+          - provider: minio
+            label: MinIO
+          - provider: rustfs
+            label: RustFS
+          - provider: seaweedfs
+            label: SeaweedFS
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
