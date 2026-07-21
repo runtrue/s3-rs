@@ -4,11 +4,13 @@ mod multipart;
 mod object;
 mod types;
 
+pub(crate) use multipart::MultipartUploadSource;
 pub use multipart::{
     AbortMultipartUploadRequest, CompleteMultipartUploadOutput, CompleteMultipartUploadRequest,
     CompletedPart, CreateMultipartUploadOutput, CreateMultipartUploadRequest,
-    ListMultipartUploadsOutput, ListMultipartUploadsRequest, MultipartError, MultipartUpload,
-    MultipartUploadEntry, PartNumber, UploadId, UploadIdError, UploadPartOutput, UploadPartRequest,
+    ListMultipartUploadsOutput, ListMultipartUploadsRequest, ManagedMultipartUploadRequest,
+    MultipartError, MultipartUpload, MultipartUploadEntry, PartNumber, UploadId, UploadIdError,
+    UploadPartOutput, UploadPartRequest,
 };
 pub use object::{
     CopyObjectOutput, CopyObjectRequest, CopySource, DeleteError, DeleteObjectOutput,

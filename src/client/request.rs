@@ -85,9 +85,10 @@ impl S3Client {
         let mut attempts_completed = 0_u32;
 
         loop {
-            let remaining = deadline.remaining()?;
-            let request = self
-                .signed_request(SignedRequestInput {
+            deadline.remaining()?;
+            let request = tokio::time::timeout_at(
+                deadline.instant(),
+                self.signed_request(SignedRequestInput {
                     method: method.clone(),
                     target: &target,
                     query: &query_refs,
@@ -95,8 +96,11 @@ impl S3Client {
                     body,
                     payload_hash: &payload_hash,
                     signing_region: &signing_region,
-                })
-                .await?;
+                }),
+            )
+            .await
+            .map_err(|_| operation_timeout())??;
+            let remaining = deadline.remaining()?;
             attempts_completed = attempts_completed.saturating_add(1);
             let attempt_timeout = min(self.inner.config.attempt_timeout(), remaining);
             let result = self.inner.transport.send(request, attempt_timeout).await;
@@ -110,7 +114,12 @@ impl S3Client {
                 {
                     let region = controlled_region_redirect(response.status(), response.headers())
                         .expect("guard established a region redirect");
-                    if !self.uses_standard_aws_endpoint() {
+                    let policy = self.inner.config.retry_policy();
+                    if !self.uses_standard_aws_endpoint()
+                        || !replayable
+                        || attempts_completed >= policy.max_attempts()
+                        || started.elapsed() >= policy.max_elapsed()
+                    {
                         let retry_after = parse_retry_after(response.headers());
                         let error = self.response_error(response, deadline).await;
                         (error, retry_after)
@@ -332,6 +341,13 @@ impl S3Client {
     }
 }
 
+fn operation_timeout() -> S3Error {
+    S3Error::timeout(
+        TimeoutPhase::Operation,
+        "S3 operation exceeded its overall deadline",
+    )
+}
+
 async fn collect_incoming(
     mut body: Incoming,
     maximum: usize,
@@ -339,15 +355,33 @@ async fn collect_incoming(
     deadline: &OperationDeadline,
 ) -> Result<Vec<u8>, S3Error> {
     let mut output = Vec::with_capacity(maximum.min(8 * 1024));
+    let mut idle_deadline = Instant::now() + idle_timeout;
     loop {
-        let wait = min(idle_timeout, deadline.remaining()?);
-        let frame = tokio::time::timeout(wait, body.frame())
+        let operation_deadline = deadline.instant();
+        if operation_deadline <= Instant::now() {
+            return Err(operation_timeout());
+        }
+        if idle_deadline <= Instant::now() {
+            return Err(S3Error::timeout(
+                TimeoutPhase::ResponseBody,
+                "response body was idle past its configured timeout",
+            ));
+        }
+        let wait_until = min(operation_deadline, idle_deadline);
+        let frame = tokio::time::timeout_at(wait_until, body.frame())
             .await
             .map_err(|_| {
-                S3Error::timeout(
-                    TimeoutPhase::ResponseBody,
-                    "response body was idle past its configured timeout",
-                )
+                if operation_deadline <= idle_deadline {
+                    S3Error::timeout(
+                        TimeoutPhase::Operation,
+                        "S3 operation exceeded its overall deadline",
+                    )
+                } else {
+                    S3Error::timeout(
+                        TimeoutPhase::ResponseBody,
+                        "response body was idle past its configured timeout",
+                    )
+                }
             })?;
         let Some(frame) = frame else {
             return Ok(output);
@@ -356,6 +390,10 @@ async fn collect_incoming(
         let Ok(data) = frame.into_data() else {
             continue;
         };
+        if data.is_empty() {
+            tokio::task::yield_now().await;
+            continue;
+        }
         let new_length = output
             .len()
             .checked_add(data.len())
@@ -364,6 +402,7 @@ async fn collect_incoming(
             return Err(oversized_response(maximum));
         }
         output.extend_from_slice(&data);
+        idle_deadline = Instant::now() + idle_timeout;
     }
 }
 
@@ -479,7 +518,11 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
         return Some(Duration::from_secs(seconds));
     }
     let retry_at = httpdate::parse_http_date(value).ok()?;
-    retry_at.duration_since(SystemTime::now()).ok()
+    Some(
+        retry_at
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO),
+    )
 }
 
 fn controlled_region_redirect(status: StatusCode, headers: &HeaderMap) -> Option<&str> {
@@ -532,6 +575,37 @@ mod tests {
         assert_eq!(
             classify_service_error(StatusCode::FORBIDDEN, None),
             ErrorCategory::Authorization
+        );
+    }
+
+    #[test]
+    fn retry_after_in_the_past_means_no_delay() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Thu, 01 Jan 1970 00:00:00 GMT"),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn region_redirects_require_a_valid_aws_region_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-amz-bucket-region"),
+            HeaderValue::from_static("eu-west-1"),
+        );
+        assert_eq!(
+            controlled_region_redirect(StatusCode::MOVED_PERMANENTLY, &headers),
+            Some("eu-west-1")
+        );
+        headers.insert(
+            HeaderName::from_static("x-amz-bucket-region"),
+            HeaderValue::from_static("amazonaws.com"),
+        );
+        assert_eq!(
+            controlled_region_redirect(StatusCode::MOVED_PERMANENTLY, &headers),
+            None
         );
     }
 }

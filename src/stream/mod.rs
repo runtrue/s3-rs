@@ -252,6 +252,7 @@ pub(crate) struct TransportBody {
     remaining: u64,
     expected_sha256: [u8; 32],
     hasher: Sha256,
+    final_chunk: Option<Bytes>,
     finished: bool,
 }
 
@@ -262,6 +263,7 @@ impl TransportBody {
             remaining: length,
             expected_sha256,
             hasher: Sha256::new(),
+            final_chunk: None,
             finished: false,
         }
     }
@@ -285,6 +287,45 @@ impl Body for TransportBody {
         }
 
         loop {
+            if self.final_chunk.is_some() {
+                match self.stream.as_mut().poll_next(context) {
+                    Poll::Ready(Some(Ok(chunk))) if chunk.is_empty() => continue,
+                    Poll::Ready(Some(Ok(_))) => {
+                        self.finished = true;
+                        self.remaining = 0;
+                        self.final_chunk = None;
+                        return Poll::Ready(Some(Err(S3Error::integrity(
+                            "upload exceeded its declared content length",
+                        ))));
+                    }
+                    Poll::Ready(Some(Err(error))) => {
+                        self.finished = true;
+                        self.remaining = 0;
+                        self.final_chunk = None;
+                        return Poll::Ready(Some(Err(S3Error::transport(error))));
+                    }
+                    Poll::Ready(None) => {
+                        let digest: [u8; 32] = self.hasher.clone().finalize().into();
+                        if digest != self.expected_sha256 {
+                            self.finished = true;
+                            self.remaining = 0;
+                            self.final_chunk = None;
+                            return Poll::Ready(Some(Err(S3Error::integrity(
+                                "upload bytes did not match the signed payload digest",
+                            ))));
+                        }
+                        self.finished = true;
+                        self.remaining = 0;
+                        let chunk = self
+                            .final_chunk
+                            .take()
+                            .expect("final upload chunk was established");
+                        return Poll::Ready(Some(Ok(Frame::data(chunk))));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
             match self.stream.as_mut().poll_next(context) {
                 Poll::Ready(Some(Ok(chunk))) => {
                     if chunk.is_empty() {
@@ -292,37 +333,35 @@ impl Body for TransportBody {
                     }
                     let Ok(chunk_length) = u64::try_from(chunk.len()) else {
                         self.finished = true;
+                        self.remaining = 0;
                         return Poll::Ready(Some(Err(S3Error::integrity(
                             "upload chunk length does not fit in u64",
                         ))));
                     };
                     if chunk_length > self.remaining {
                         self.finished = true;
+                        self.remaining = 0;
                         return Poll::Ready(Some(Err(S3Error::integrity(
                             "upload exceeded its declared content length",
                         ))));
                     }
-                    self.remaining -= chunk_length;
                     self.hasher.update(&chunk);
-                    if self.remaining == 0 {
-                        let digest: [u8; 32] = self.hasher.clone().finalize().into();
-                        if digest != self.expected_sha256 {
-                            self.finished = true;
-                            return Poll::Ready(Some(Err(S3Error::integrity(
-                                "upload bytes did not match the signed payload digest",
-                            ))));
-                        }
-                        self.finished = true;
+                    if chunk_length == self.remaining {
+                        self.final_chunk = Some(chunk);
+                        continue;
                     }
+                    self.remaining -= chunk_length;
                     return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
                 Poll::Ready(Some(Err(error))) => {
                     self.finished = true;
+                    self.remaining = 0;
                     return Poll::Ready(Some(Err(S3Error::transport(error))));
                 }
                 Poll::Ready(None) => {
                     self.finished = true;
                     if self.remaining != 0 {
+                        self.remaining = 0;
                         return Poll::Ready(Some(Err(S3Error::integrity(
                             "upload ended before its declared content length",
                         ))));
@@ -360,10 +399,13 @@ fn encode_hex(bytes: &[u8]) -> String {
     output
 }
 
-/// A download stream that enforces idle timeout and content-length integrity.
+/// A download stream that enforces idle timeout, content length, and any
+/// supported full-object checksum returned by S3.
 pub struct ResponseStream {
     inner: DownloadItems,
     expected_length: Option<u64>,
+    expected_sha256: Option<[u8; 32]>,
+    sha256: Option<Sha256>,
     received: u64,
     idle_timeout: Duration,
     idle: Pin<Box<Sleep>>,
@@ -379,6 +421,8 @@ impl ResponseStream {
         Self {
             inner: Box::pin(stream),
             expected_length,
+            expected_sha256: None,
+            sha256: None,
             received: 0,
             idle_timeout,
             idle: Box::pin(tokio::time::sleep(idle_timeout)),
@@ -390,6 +434,7 @@ impl ResponseStream {
     pub(crate) fn with_deadline<S>(
         stream: S,
         expected_length: Option<u64>,
+        expected_sha256: Option<[u8; 32]>,
         idle_timeout: Duration,
         deadline: Instant,
     ) -> Self
@@ -397,6 +442,8 @@ impl ResponseStream {
         S: Stream<Item = Result<Bytes, S3Error>> + Send + 'static,
     {
         let mut response = Self::new(stream, expected_length, idle_timeout);
+        response.expected_sha256 = expected_sha256;
+        response.sha256 = expected_sha256.map(|_| Sha256::new());
         response.deadline = Some(Box::pin(tokio::time::sleep_until(deadline)));
         response
     }
@@ -437,6 +484,7 @@ impl fmt::Debug for ResponseStream {
         formatter
             .debug_struct("ResponseStream")
             .field("expected_length", &self.expected_length)
+            .field("verifies_sha256", &self.expected_sha256.is_some())
             .field("received", &self.received)
             .field("idle_timeout", &self.idle_timeout)
             .field("has_deadline", &self.deadline.is_some())
@@ -465,8 +513,20 @@ impl Stream for ResponseStream {
             ))));
         }
 
+        if self.idle.as_mut().poll(context).is_ready() {
+            self.finished = true;
+            return Poll::Ready(Some(Err(S3Error::timeout(
+                crate::error::TimeoutPhase::ResponseBody,
+                "download body was idle past its configured timeout",
+            ))));
+        }
+
         match self.inner.as_mut().poll_next(context) {
             Poll::Ready(Some(Ok(chunk))) => {
+                if chunk.is_empty() {
+                    context.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
                 let idle_timeout = self.idle_timeout;
                 self.idle.as_mut().reset(Instant::now() + idle_timeout);
                 let Ok(chunk_length) = u64::try_from(chunk.len()) else {
@@ -489,6 +549,9 @@ impl Stream for ResponseStream {
                         "download exceeded the declared content length",
                     ))));
                 }
+                if let Some(hasher) = &mut self.sha256 {
+                    hasher.update(&chunk);
+                }
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(error))) => {
@@ -504,20 +567,25 @@ impl Stream for ResponseStream {
                     Poll::Ready(Some(Err(S3Error::integrity(
                         "download ended before the declared content length",
                     ))))
+                } else if let Some(expected) = self.expected_sha256 {
+                    let actual: [u8; 32] = self
+                        .sha256
+                        .take()
+                        .expect("SHA-256 state accompanies an expected digest")
+                        .finalize()
+                        .into();
+                    if actual == expected {
+                        Poll::Ready(None)
+                    } else {
+                        Poll::Ready(Some(Err(S3Error::integrity(
+                            "download bytes did not match the returned SHA-256 checksum",
+                        ))))
+                    }
                 } else {
                     Poll::Ready(None)
                 }
             }
-            Poll::Pending => match self.idle.as_mut().poll(context) {
-                Poll::Ready(()) => {
-                    self.finished = true;
-                    Poll::Ready(Some(Err(S3Error::timeout(
-                        crate::error::TimeoutPhase::ResponseBody,
-                        "download body was idle past its configured timeout",
-                    ))))
-                }
-                Poll::Pending => Poll::Pending,
-            },
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -643,6 +711,23 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        let trailing_chunk = stream::iter([
+            Ok::<_, io::Error>(Bytes::from_static(b"a")),
+            Ok::<_, io::Error>(Bytes::from_static(b"b")),
+        ]);
+        let prepared = ByteStream::from_stream(trailing_chunk, 1, Sha256::digest(b"a").into())
+            .prepare()
+            .await
+            .unwrap();
+        let error = prepared
+            .request_body()
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap_err();
+        assert_eq!(error.category(), crate::error::ErrorCategory::Integrity);
     }
 
     #[tokio::test]
@@ -655,10 +740,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn empty_download_chunks_do_not_count_as_progress() {
+        let source = stream::once(async { Ok(Bytes::new()) })
+            .chain(stream::pending::<Result<Bytes, crate::error::S3Error>>());
+        let mut body = ResponseStream::new(source, None, std::time::Duration::from_secs(2));
+        let next = tokio::spawn(async move { body.next().await });
+
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let error = next.await.unwrap().unwrap().unwrap_err();
+        assert_eq!(
+            error.timeout_phase(),
+            Some(crate::error::TimeoutPhase::ResponseBody)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn response_enforces_operation_deadline() {
         let source = stream::pending::<Result<Bytes, crate::error::S3Error>>();
         let mut body = ResponseStream::with_deadline(
             source,
+            None,
             None,
             std::time::Duration::from_secs(60),
             tokio::time::Instant::now() + std::time::Duration::from_secs(2),
@@ -669,6 +770,39 @@ mod tests {
         assert_eq!(
             error.timeout_phase(),
             Some(crate::error::TimeoutPhase::Operation)
+        );
+    }
+
+    #[tokio::test]
+    async fn response_verifies_expected_sha256_at_end_of_stream() {
+        let source = stream::iter([Ok(Bytes::from_static(b"abc"))]);
+        let mut body = ResponseStream::with_deadline(
+            source,
+            Some(3),
+            Some(Sha256::digest(b"abc").into()),
+            std::time::Duration::from_secs(1),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            body.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"abc")
+        );
+        assert!(body.next().await.is_none());
+
+        let source = stream::iter([Ok(Bytes::from_static(b"abc"))]);
+        let mut body = ResponseStream::with_deadline(
+            source,
+            Some(3),
+            Some(Sha256::digest(b"different").into()),
+            std::time::Duration::from_secs(1),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert!(body.next().await.unwrap().is_ok());
+        let error = body.next().await.unwrap().unwrap_err();
+        assert_eq!(error.category(), crate::error::ErrorCategory::Integrity);
+        assert_eq!(
+            error.retry_classification(),
+            crate::error::RetryClassification::Never
         );
     }
 }

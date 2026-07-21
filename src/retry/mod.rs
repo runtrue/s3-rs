@@ -93,8 +93,8 @@ impl RetryPolicy {
 
     /// Computes a full-jitter delay after `attempts_completed` attempts.
     ///
-    /// A server-provided `Retry-After` value is honored after clamping it to the
-    /// policy's delay and elapsed-time bounds.
+    /// A server-provided `Retry-After` value is honored exactly when it fits
+    /// within the remaining elapsed-time bound.
     pub fn delay(
         &self,
         attempts_completed: u32,

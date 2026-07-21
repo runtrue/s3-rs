@@ -195,6 +195,15 @@ impl S3Error {
         )
     }
 
+    /// Creates a cancellation error.
+    pub fn cancellation(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Cancellation,
+            message,
+            RetryClassification::Never,
+        )
+    }
+
     /// Attaches parsed S3 response metadata.
     pub fn with_service_details(
         mut self,

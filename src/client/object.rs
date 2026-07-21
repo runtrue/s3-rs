@@ -102,6 +102,8 @@ impl S3Client {
             .await?;
         let metadata = parse_object_metadata(response.headers())?;
         let content_range = parse_content_range(response.headers())?;
+        let expected_sha256 =
+            verified_download_sha256(response.headers())?.filter(|_| content_range.is_none());
         let expected_length = response
             .headers()
             .get(CONTENT_LENGTH)
@@ -110,10 +112,11 @@ impl S3Client {
         let stream = response
             .into_body()
             .into_data_stream()
-            .map_err(S3Error::transport);
+            .map_err(crate::transport::classify_response_body_error);
         let body = ResponseStream::with_deadline(
             stream,
             expected_length,
+            expected_sha256,
             self.inner.config.idle_body_timeout(),
             deadline.instant(),
         );
@@ -569,6 +572,24 @@ fn parse_checksum(headers: &HeaderMap) -> Result<Checksum, S3Error> {
     })
 }
 
+fn verified_download_sha256(headers: &HeaderMap) -> Result<Option<[u8; 32]>, S3Error> {
+    let Some(encoded) = response_header(headers, "x-amz-checksum-sha256")? else {
+        return Ok(None);
+    };
+    if response_header(headers, "x-amz-checksum-type")?
+        .is_some_and(|checksum_type| checksum_type != "FULL_OBJECT")
+    {
+        return Ok(None);
+    }
+    let decoded = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| S3Error::invalid_response("S3 returned an invalid base64 SHA-256 checksum"))?;
+    let digest = decoded.try_into().map_err(|_| {
+        S3Error::invalid_response("S3 returned a SHA-256 checksum with an invalid length")
+    })?;
+    Ok(Some(digest))
+}
+
 fn merge_checksum(target: &mut Checksum, headers: Checksum) {
     target.crc32 = headers.crc32.or_else(|| target.crc32.take());
     target.crc32c = headers.crc32c.or_else(|| target.crc32c.take());
@@ -697,6 +718,7 @@ fn percent_encode(bytes: &[u8], preserve_slash: bool, output: &mut String) {
 mod tests {
     use super::*;
     use crate::operation::{CopySource, ObjectKey};
+    use sha2::Sha256;
     use time::macros::datetime;
 
     #[test]
@@ -725,6 +747,40 @@ mod tests {
         assert_eq!(
             parsed.last_modified,
             Some(datetime!(2024-03-12 10:15:30 UTC))
+        );
+    }
+
+    #[test]
+    fn validates_only_full_object_sha256_checksums() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-checksum-sha256",
+            HeaderValue::from_static("ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="),
+        );
+        assert_eq!(
+            verified_download_sha256(&headers).unwrap(),
+            Some(Sha256::digest(b"abc").into())
+        );
+
+        headers.insert("x-amz-checksum-type", HeaderValue::from_static("COMPOSITE"));
+        assert_eq!(verified_download_sha256(&headers).unwrap(), None);
+
+        headers.insert(
+            "x-amz-checksum-type",
+            HeaderValue::from_static("FULL_OBJECT"),
+        );
+        headers.insert(
+            "x-amz-checksum-sha256",
+            HeaderValue::from_static("not-base64"),
+        );
+        assert_eq!(
+            verified_download_sha256(&headers).unwrap_err().category(),
+            ErrorCategory::InvalidResponse
+        );
+        headers.insert("x-amz-checksum-sha256", HeaderValue::from_static("YQ=="));
+        assert_eq!(
+            verified_download_sha256(&headers).unwrap_err().category(),
+            ErrorCategory::InvalidResponse
         );
     }
 

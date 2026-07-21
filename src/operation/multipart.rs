@@ -1,4 +1,7 @@
+use std::path::{Path, PathBuf};
 use std::{fmt, num::NonZeroU16, str::FromStr};
+
+use bytes::Bytes;
 
 use super::{Checksum, ChecksumAlgorithm, ObjectKey, PageSize, RequestIds};
 
@@ -187,6 +190,86 @@ pub struct MultipartUpload {
     upload_id: UploadId,
     /// Parts that have completed successfully, in ascending order.
     completed_parts: Vec<CompletedPart>,
+}
+
+pub(crate) enum MultipartUploadSource {
+    Bytes(Bytes),
+    File(PathBuf),
+}
+
+/// Request for a bounded, automatically cleaned-up multipart upload.
+///
+/// In-memory sources retain the caller's complete byte buffer for the duration
+/// of the operation. File sources use only the configured in-flight part byte
+/// budget in memory; their immutable snapshot is disk-backed.
+pub struct ManagedMultipartUploadRequest {
+    pub(crate) key: ObjectKey,
+    pub(crate) source: MultipartUploadSource,
+    pub(crate) content_type: Option<String>,
+    pub(crate) user_metadata: std::collections::BTreeMap<String, String>,
+}
+
+impl ManagedMultipartUploadRequest {
+    /// Constructs a request with a replayable in-memory body.
+    pub fn from_bytes(key: ObjectKey, bytes: impl Into<Bytes>) -> Self {
+        Self {
+            key,
+            source: MultipartUploadSource::Bytes(bytes.into()),
+            content_type: None,
+            user_metadata: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Constructs a request with a replayable regular-file body.
+    ///
+    /// The file is copied into a private disk-backed snapshot before S3 creates
+    /// the multipart upload, so later changes to the source path have no effect.
+    pub fn from_path(key: ObjectKey, path: impl AsRef<Path>) -> Self {
+        Self {
+            key,
+            source: MultipartUploadSource::File(path.as_ref().to_owned()),
+            content_type: None,
+            user_metadata: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Sets the object's media type.
+    pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.content_type = Some(content_type.into());
+        self
+    }
+
+    /// Adds user-defined object metadata.
+    pub fn with_metadata(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.user_metadata.insert(name.into(), value.into());
+        self
+    }
+
+    /// Returns the destination object key.
+    pub const fn key(&self) -> &ObjectKey {
+        &self.key
+    }
+}
+
+impl fmt::Debug for ManagedMultipartUploadRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedMultipartUploadRequest")
+            .field("key", &self.key)
+            .field(
+                "source",
+                &match self.source {
+                    MultipartUploadSource::Bytes(_) => "bytes",
+                    MultipartUploadSource::File(_) => "file",
+                },
+            )
+            .field("content_type", &self.content_type)
+            .field(
+                "user_metadata_names",
+                &self.user_metadata.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl MultipartUpload {
@@ -673,5 +756,19 @@ mod tests {
 
         assert_eq!(part.upload_id().as_str(), "upload");
         assert_eq!(abort.upload_id().as_str(), "upload");
+    }
+
+    #[test]
+    fn managed_request_debug_redacts_source_and_metadata_values() {
+        let request = ManagedMultipartUploadRequest::from_path(
+            ObjectKey::new("key").unwrap(),
+            "/sensitive/source/path",
+        )
+        .with_metadata("name", "sensitive-value");
+        let rendered = format!("{request:?}");
+        assert!(rendered.contains("file"));
+        assert!(rendered.contains("name"));
+        assert!(!rendered.contains("/sensitive/source/path"));
+        assert!(!rendered.contains("sensitive-value"));
     }
 }

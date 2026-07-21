@@ -1,6 +1,7 @@
 //! S3 client implementation.
 
 mod multipart;
+mod multipart_upload;
 mod object;
 mod presign;
 mod request;
