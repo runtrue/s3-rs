@@ -74,7 +74,7 @@ pub(crate) fn aws_uri_encode(input: &str, encode_slash: bool) -> String {
 
 /// Construct the canonical URI without normalizing repeated slashes or dot
 /// segments. S3 treats those bytes as part of the object key.
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) fn canonical_uri(path: &str) -> String {
     if path.is_empty() {
         return "/".to_owned();
@@ -376,6 +376,41 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             prop_assert!(components.windows(2).all(|pair| pair[0] <= pair[1]));
+        }
+
+        #[test]
+        fn canonical_query_is_permutation_invariant(
+            parameters in prop::collection::vec((".{0,16}", ".{0,16}"), 0..40)
+        ) {
+            let forward = parameters
+                .iter()
+                .map(|(name, value)| QueryParam::new(name, value))
+                .collect::<Vec<_>>();
+            let reverse = parameters
+                .iter()
+                .rev()
+                .map(|(name, value)| QueryParam::new(name, value))
+                .collect::<Vec<_>>();
+            prop_assert_eq!(canonical_query(&forward), canonical_query(&reverse));
+        }
+
+        #[test]
+        fn header_names_are_case_insensitive(
+            suffix in "[A-Za-z0-9-]{1,24}",
+            value in "[A-Za-z0-9]{1,40}",
+        ) {
+            let lower = format!("x-test-{}", suffix.to_ascii_lowercase());
+            let upper = lower.to_ascii_uppercase();
+            let first = canonical_headers(&[
+                Header::new("host", "example.test"),
+                Header::new(&lower, &value),
+            ]).unwrap();
+            let second = canonical_headers(&[
+                Header::new("HOST", "example.test"),
+                Header::new(&upper, &value),
+            ]).unwrap();
+            prop_assert_eq!(first.canonical(), second.canonical());
+            prop_assert_eq!(first.signed(), second.signed());
         }
 
         #[test]

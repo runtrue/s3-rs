@@ -120,5 +120,15 @@ mod tests {
         fn arbitrary_list_documents_never_panic(body in proptest::collection::vec(any::<u8>(), 0..4096)) {
             let _ = parse_list_objects_v2(&body, 4_096);
         }
+
+        #[test]
+        fn pagination_tokens_remain_opaque(token in "[A-Za-z0-9+/=._~-]{0,200}") {
+            let body = format!(
+                "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>{token}</NextContinuationToken></ListBucketResult>"
+            );
+            let parsed = parse_list_objects_v2(body.as_bytes(), 4_096).unwrap();
+            prop_assert!(parsed.is_truncated);
+            prop_assert_eq!(parsed.next_continuation_token.as_deref(), Some(token.as_str()));
+        }
     }
 }

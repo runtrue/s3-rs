@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "generated_at_utc": "2026-07-21T03:25:39.379735926Z",
+  "generated_at_unix_seconds": 1784604339,
+  "environment": {
+    "git_revision": "8d9e412cbf675777fa6927ebab1812224a92a80d",
+    "git_worktree_dirty": true,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "target_arch": "x86_64",
+    "target_os": "linux",
+    "kernel": "Linux 7.0.0-1007-ibm #7-Ubuntu SMP PREEMPT Tue May 26 16:41:08 UTC 2026 x86_64 GNU/Linux",
+    "cpu_model": "Intel Xeon Processor (Cascadelake)",
+    "logical_cpus": 16,
+    "total_memory_bytes": 33697361920,
+    "docker_server": "29.1.3",
+    "minio_release": "RELEASE.2025-09-07T16-13-09Z",
+    "minio_image": "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+    "endpoint": "http://127.0.0.1:32790",
+    "build_profile": "release"
+  },
+  "workload": {
+    "payload_bytes": 67108864,
+    "payload_pattern": "every byte is 0xa5",
+    "multipart_part_bytes": 8388608,
+    "multipart_concurrency": 4,
+    "multipart_in_flight_budget_bytes": 33554432,
+    "disk_backed_peak_rss_limit_bytes": 134217728,
+    "large_file_bytes": 268435456,
+    "file_generation_buffer_bytes": 65536,
+    "measured_iterations_per_transfer": 1,
+    "warmup": "one 6-byte PUT and DELETE before measured transfers"
+  },
+  "measurements": {
+    "cold_client_construction": {
+      "elapsed_seconds": 0.000037959,
+      "bytes": null,
+      "throughput_mib_per_second": null,
+      "rss_before_bytes": 4476928,
+      "peak_rss_bytes": 4829184,
+      "peak_rss_delta_bytes": 352256,
+      "peak_rss_delta_to_object_size": null
+    },
+    "disk_backed_managed_multipart_upload": {
+      "elapsed_seconds": 2.635347054,
+      "bytes": 268435456,
+      "throughput_mib_per_second": 97.14090582924796,
+      "rss_before_bytes": 5677056,
+      "peak_rss_bytes": 113254400,
+      "peak_rss_delta_bytes": 107577344,
+      "peak_rss_delta_to_object_size": 0.4007568359375
+    },
+    "disk_backed_rss_bound": {
+      "observed_peak_rss_delta_bytes": 107577344,
+      "limit_bytes": 134217728,
+      "passed": true,
+      "rationale": "four times the configured multipart in-flight byte budget"
+    },
+    "single_put": {
+      "elapsed_seconds": 0.951374696,
+      "bytes": 67108864,
+      "throughput_mib_per_second": 67.27107654753097,
+      "rss_before_bytes": 180371456,
+      "peak_rss_bytes": 180371456,
+      "peak_rss_delta_bytes": 0,
+      "peak_rss_delta_to_object_size": 0.0
+    },
+    "streaming_get_to_sink": {
+      "elapsed_seconds": 0.05867429,
+      "bytes": 67108864,
+      "throughput_mib_per_second": 1090.767353128602,
+      "rss_before_bytes": 180371456,
+      "peak_rss_bytes": 180375552,
+      "peak_rss_delta_bytes": 4096,
+      "peak_rss_delta_to_object_size": 0.00006103515625
+    },
+    "managed_multipart_upload": {
+      "elapsed_seconds": 0.501861419,
+      "bytes": 67108864,
+      "throughput_mib_per_second": 127.52524417502593,
+      "rss_before_bytes": 180379648,
+      "peak_rss_bytes": 180379648,
+      "peak_rss_delta_bytes": 0,
+      "peak_rss_delta_to_object_size": 0.0
+    },
+    "sampled_process_peak_rss_bytes": 180379648
+  },
+  "caveats": [
+    "This is a local single-process MinIO measurement, not a comparative benchmark.",
+    "Each transfer is measured once; scheduler, filesystem, loopback, CPU scaling, and container state affect results.",
+    "Transfer timing includes client hashing, signing, serialization, and response handling; server startup and the warm-up request are excluded.",
+    "GET is consumed incrementally without retaining the body and verifies byte count, but does not persist or hash the downloaded bytes.",
+    "RSS is sampled from Linux /proc every 1 ms and is process-wide; allocator retention and prior phases make per-phase peaks non-isolated.",
+    "The disk-backed phase generates its configured source with one reusable 64 KiB buffer, then includes the client's disk snapshot and bounded multipart upload in its timing.",
+    "The opt-in regression check permits four times the configured multipart in-flight budget for part buffers, transport copies, runtime state, and allocator behavior; it is an engineering envelope, not a precise allocation model.",
+    "A peak-RSS delta at one object size demonstrates this run's bounded behavior but is not a proof of asymptotic memory usage; Linux page cache is outside process RSS.",
+    "The aggregate process peak uses the same RSS sampler as phase peaks; kernel VmHWM is intentionally omitted because its accounting can lag sampled VmRSS.",
+    "Cold client construction means the first S3Client::new call in this process; configuration construction is excluded.",
+    "The fixed repeated-byte payload is deterministic but does not model every production workload."
+  ]
+}

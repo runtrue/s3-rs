@@ -221,7 +221,7 @@ fn cancelled() -> S3Error {
     S3Error::cancellation("multipart upload was cancelled")
 }
 
-fn effective_concurrency(
+pub(crate) fn effective_concurrency(
     configured: usize,
     byte_budget: u64,
     part_size: u64,

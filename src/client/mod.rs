@@ -6,6 +6,9 @@ mod object;
 mod presign;
 mod request;
 
+#[cfg(feature = "fuzzing")]
+pub(crate) use multipart_upload::effective_concurrency;
+
 use std::fmt;
 use std::sync::Arc;
 

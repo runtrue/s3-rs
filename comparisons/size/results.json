@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "measured_at_utc": "2026-07-21T03:16:39Z",
+  "environment": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "target": "x86_64-unknown-linux-gnu",
+    "os": "Ubuntu 26.04 LTS",
+    "kernel": "Linux 7.0.0-1007-ibm x86_64 GNU/Linux",
+    "cpu": "Intel Xeon Processor (Cascadelake)",
+    "cargo_jobs": 1
+  },
+  "s3_wire_source": {
+    "git_revision": "8d9e412cbf675777fa6927ebab1812224a92a80d",
+    "dirty": true,
+    "source_sha256": "4c1eff539bf69fda7e9cf0544b6e914c40b1b00ec539bd3f28944004e53132d0"
+  },
+  "release_profile": {
+    "opt_level": 3,
+    "lto": "thin",
+    "codegen_units": 1,
+    "panic": "abort",
+    "strip": "symbols",
+    "incremental": true
+  },
+  "methodology": {
+    "clean_build": "cargo clean followed by cargo build --release --locked",
+    "incremental_rebuild": "touch src/main.rs followed by cargo build --release --locked",
+    "dependency_count": "unique normal and build package specifications from cargo tree for the host target, excluding the comparison package"
+  },
+  "projects": [
+    {
+      "name": "s3-wire",
+      "version": "0.1.0 (local path)",
+      "features": [
+        "default-features=false"
+      ],
+      "dependency_packages": 91,
+      "clean_build_seconds": 93.82,
+      "incremental_rebuild_seconds": 10.19,
+      "binary_bytes": 1402752,
+      "binary_sha256": "6a982e86a7edae8fa6bf42e7cfa35f5db44a914a4a5c1b690b9f1864b2109a93"
+    },
+    {
+      "name": "aws-sdk-s3",
+      "version": "1.138.1",
+      "features": [
+        "default-features=false",
+        "behavior-version-latest",
+        "default-https-client",
+        "http-1x",
+        "rt-tokio",
+        "rustls"
+      ],
+      "dependency_packages": 170,
+      "clean_build_seconds": 360.78,
+      "incremental_rebuild_seconds": 55.02,
+      "binary_bytes": 9235720,
+      "binary_sha256": "104e458897b08088efb126c586788dd0b8eb254324c44a7f4284ca425ae02663"
+    },
+    {
+      "name": "rust-s3",
+      "version": "0.37.2",
+      "features": [
+        "default-features=false",
+        "tokio-rustls-tls"
+      ],
+      "dependency_packages": 136,
+      "clean_build_seconds": 230.71,
+      "incremental_rebuild_seconds": 22.92,
+      "binary_bytes": 3133880,
+      "binary_sha256": "83e3f6137d4ffc7a497d3fd16b86028197462c0c415b99de86ad8bf25a33e86e"
+    }
+  ]
+}

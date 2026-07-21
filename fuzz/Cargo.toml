@@ -1,0 +1,64 @@
+[package]
+name = "s3-wire-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+s3-wire = { path = "..", features = ["fuzzing"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "canonical_uri"
+path = "fuzz_targets/canonical_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canonical_query"
+path = "fuzz_targets/canonical_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "header_canonicalization"
+path = "fuzz_targets/header_canonicalization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "s3_error_xml"
+path = "fuzz_targets/s3_error_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "list_objects_v2_xml"
+path = "fuzz_targets/list_objects_v2_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "multipart_xml"
+path = "fuzz_targets/multipart_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "endpoint_construction"
+path = "fuzz_targets/endpoint_construction.rs"
+test = false
+doc = false
+bench = false

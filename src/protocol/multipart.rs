@@ -278,8 +278,10 @@ pub(crate) fn parse_list_multipart_uploads(
             upload.storage_class,
         ));
     }
+    let next_key_marker = document.next_key_marker.filter(|value| !value.is_empty());
     let next_upload_id_marker = document
         .next_upload_id_marker
+        .filter(|value| !value.is_empty())
         .map(|value| parse_upload_id(value, "NextUploadIdMarker"))
         .transpose()?;
     Ok(ListMultipartUploadsOutput {
@@ -290,7 +292,7 @@ pub(crate) fn parse_list_multipart_uploads(
             .map(|prefix| prefix.prefix)
             .collect(),
         is_truncated: document.is_truncated,
-        next_key_marker: document.next_key_marker,
+        next_key_marker,
         next_upload_id_marker,
         request_ids: Default::default(),
     })
@@ -408,6 +410,14 @@ mod tests {
     }
 
     #[test]
+    fn treats_empty_minio_next_markers_as_absent() {
+        let body = b"<ListMultipartUploadsResult><IsTruncated>false</IsTruncated><NextKeyMarker></NextKeyMarker><NextUploadIdMarker></NextUploadIdMarker></ListMultipartUploadsResult>";
+        let result = parse_list_multipart_uploads(body, 4_096).unwrap();
+        assert_eq!(result.next_key_marker, None);
+        assert_eq!(result.next_upload_id_marker, None);
+    }
+
+    #[test]
     fn rejects_invalid_upload_ids_from_service_documents() {
         let create = b"<InitiateMultipartUploadResult><Key>key</Key><UploadId>bad&#10;id</UploadId></InitiateMultipartUploadResult>";
         assert!(matches!(
@@ -418,7 +428,7 @@ mod tests {
             })
         ));
 
-        let listing = b"<ListMultipartUploadsResult><NextUploadIdMarker></NextUploadIdMarker></ListMultipartUploadsResult>";
+        let listing = b"<ListMultipartUploadsResult><NextUploadIdMarker>bad&#10;id</NextUploadIdMarker></ListMultipartUploadsResult>";
         assert!(matches!(
             parse_list_multipart_uploads(listing, 4_096),
             Err(ProtocolError::InvalidField {

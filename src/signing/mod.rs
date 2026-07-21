@@ -4,7 +4,7 @@ mod canonical;
 mod crypto;
 mod request;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(crate) use canonical::canonical_uri;
 pub(crate) use canonical::{
     CanonicalHeaders, Header, QueryParam, canonical_headers, canonical_query,

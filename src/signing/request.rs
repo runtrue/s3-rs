@@ -2,7 +2,7 @@ use std::{fmt, time::Duration};
 
 use time::{OffsetDateTime, macros::format_description};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 use super::canonical_uri;
 use super::crypto::hex_encode;
 use super::{
@@ -51,13 +51,13 @@ pub(crate) struct SigningScope<'a> {
 /// already encoded wire representation.
 #[derive(Clone, Copy)]
 pub(crate) enum SigningPath<'a> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     Raw(&'a str),
     Encoded(&'a str),
 }
 
 impl<'a> SigningPath<'a> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn raw(path: &'a str) -> Self {
         Self::Raw(path)
     }
@@ -69,7 +69,7 @@ impl<'a> SigningPath<'a> {
 
     fn canonical(self) -> Result<String, SigningError> {
         match self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fuzzing"))]
             Self::Raw(path) => Ok(canonical_uri(path)),
             Self::Encoded(path) => canonical_uri_from_encoded(path),
         }

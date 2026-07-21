@@ -11,6 +11,10 @@ pub mod operation;
 pub mod retry;
 pub mod stream;
 
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
+
 mod protocol;
 mod signing;
 mod transport;

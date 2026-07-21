@@ -9,7 +9,21 @@ repository = "https://github.com/runtrue/s3-rs"
 readme = "README.md"
 keywords = ["s3", "storage", "async", "streaming"]
 categories = ["api-bindings", "asynchronous", "network-programming"]
-include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
+include = [
+    "src/**",
+    "benches/**",
+    "examples/**",
+    "tests/**",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
+
+[features]
+default = []
+# Narrow, non-production entry points used by cargo-fuzz and benchmarks.
+fuzzing = []
+aws-compat = []
 
 [dependencies]
 async-trait = "0.1.91"
@@ -62,3 +76,8 @@ must_use_candidate = "allow"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[[bench]]
+name = "validation"
+harness = false
+required-features = ["fuzzing"]
