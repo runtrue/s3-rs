@@ -60,7 +60,7 @@ jobs:
         with:
           fail-on-severity: moderate
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0
-          allow-dependencies-licenses: pkg:github/trufflesecurity/trufflehog
+          allow-dependencies-licenses: pkg:githubactions/trufflesecurity/trufflehog
 
   secrets:
     name: Secret scan
