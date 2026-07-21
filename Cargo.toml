@@ -6,8 +6,10 @@ rust-version = "1.97.1"
 description = "An async, streaming S3-compatible client for Rust"
 license = "Apache-2.0"
 repository = "https://github.com/runtrue/s3-rs"
+homepage = "https://github.com/runtrue/s3-rs"
+documentation = "https://docs.rs/s3-wire"
 readme = "README.md"
-keywords = ["s3", "storage", "async", "streaming"]
+keywords = ["s3", "object-storage", "aws", "minio", "sigv4"]
 categories = ["api-bindings", "asynchronous", "network-programming"]
 include = [
     "src/**",
@@ -69,7 +71,7 @@ tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-
 
 [lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
+missing_docs = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -86,3 +88,7 @@ strip = "symbols"
 name = "validation"
 harness = false
 required-features = ["fuzzing"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]

@@ -100,7 +100,7 @@ impl S3Config {
         &self.retry_policy
     }
 
-    /// Returns the object-size threshold for automatic multipart uploads.
+    /// Returns the object-size threshold available to application multipart policy.
     pub fn multipart_threshold(&self) -> u64 {
         self.multipart_threshold
     }
@@ -257,7 +257,7 @@ impl S3ConfigBuilder {
         self
     }
 
-    /// Sets the object-size threshold for automatic multipart uploads.
+    /// Sets the object-size threshold available to application multipart policy.
     pub fn multipart_threshold(mut self, bytes: u64) -> Self {
         self.multipart_threshold = bytes;
         self
