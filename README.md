@@ -188,7 +188,7 @@ The public client includes `PutObject`, `GetObject`, `HeadObject`, `DeleteObject
 - PutObject can calculate a SHA-256 checksum. CRC32, CRC32C, CRC64/NVME, and SHA-1 upload calculation are not implemented. Primitive multipart accepts validated caller-supplied base64 checksums. Full-object SHA-256 download checksums are verified at end of stream; other returned checksum values are exposed but not recalculated.
 - Managed multipart has no destination precondition. Cancellation owns abort cleanup, but process termination cannot complete an in-flight network cleanup; stale uploads should also be reclaimed through a bounded listing policy.
 - Metadata-service credential providers, bucket administration, ACLs, policies, version listing, and object encryption configuration are outside this crate's current API.
-- The pinned MinIO suite has been run locally. The real AWS compatibility suite is implemented as an opt-in test but has not yet been executed for this release, so MinIO results are not evidence of AWS compatibility.
+- The pinned MinIO, RustFS, and SeaweedFS suites run in CI. The real AWS compatibility suite is implemented as an opt-in test but has not yet been executed for this release, so compatible-server results are not evidence of AWS compatibility.
 
 ## Documentation
 

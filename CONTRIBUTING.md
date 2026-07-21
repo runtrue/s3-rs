@@ -31,7 +31,10 @@ Dependencies should have a focused purpose, a maintained release, compatible lic
 
 ## Integration tests
 
-Run `./scripts/test-minio.sh` for the pinned MinIO suite. It requires Docker and `curl` and removes its isolated container on exit. Real AWS tests are opt-in and must use a dedicated bucket or test prefix with least-privilege, short-lived credentials; see [testing](docs/testing.md).
+Run `./scripts/test-s3-compat.sh <minio|rustfs|seaweedfs>` for a pinned endpoint suite. It
+requires Docker and `curl` and removes its isolated container on exit. Real AWS tests are opt-in
+and must use a dedicated bucket or test prefix with least-privilege, short-lived credentials; see
+[testing](docs/testing.md).
 
 ## Pull requests
 

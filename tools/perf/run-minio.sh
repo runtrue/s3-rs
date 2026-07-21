@@ -4,8 +4,8 @@ set -eu
 TOOL_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 REPOSITORY_DIR=$(CDPATH='' cd -- "$TOOL_DIR/../.." && pwd)
 
-# Keep this identical to scripts/test-minio.sh. It is an official MinIO image
-# pinned by manifest-list digest rather than a mutable tag.
+# Keep this MinIO pin identical to the MinIO entry in scripts/test-s3-compat.sh.
+# It is an official image pinned by manifest-list digest rather than a mutable tag.
 MINIO_IMAGE=${MINIO_IMAGE:-'minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'}
 MINIO_RELEASE=${MINIO_RELEASE:-'RELEASE.2025-09-07T16-13-09Z'}
 MINIO_S3_BUCKET=${MINIO_S3_BUCKET:-'s3-wire-perf'}

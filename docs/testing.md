@@ -32,24 +32,29 @@ cargo fuzz run canonical_uri
 
 Use bounded run times and retain any minimized regression input as a normal test fixture before closing a parser or signing defect.
 
-## MinIO integration
+## S3 endpoint integration
 
 The reproducible local command is:
 
 ```sh
-./scripts/test-minio.sh
+./scripts/test-s3-compat.sh minio
+./scripts/test-s3-compat.sh rustfs
+./scripts/test-s3-compat.sh seaweedfs
 ```
 
-It requires Docker and `curl`, starts MinIO from an immutable image digest on a random loopback port, creates an isolated bucket, runs the ignored integration suite, and removes the container on exit. See `tests/minio.md` for the exact image release and digest.
+The runner requires Docker and `curl`. It starts the selected provider from an immutable image
+digest on a random loopback port, creates an isolated bucket, runs the ignored integration suite,
+and removes the container on exit. CI runs the same cases against MinIO, RustFS, and SeaweedFS.
+See `tests/s3_compat.md` for exact releases and digests.
 
-To use an already provisioned MinIO instance:
+To use an already provisioned S3-compatible instance:
 
 ```sh
-export MINIO_S3_ENDPOINT=http://127.0.0.1:9000
-export MINIO_S3_BUCKET=s3-wire-test
-export MINIO_ROOT_USER=local-test-access
-export MINIO_ROOT_PASSWORD=local-test-secret
-cargo test --test minio -- --ignored --nocapture
+export S3_COMPAT_ENDPOINT=http://127.0.0.1:9000
+export S3_COMPAT_BUCKET=s3-wire-test
+export S3_COMPAT_ACCESS_KEY=local-test-access
+export S3_COMPAT_SECRET_KEY=local-test-secret
+cargo test --test s3_compat -- --ignored --nocapture
 ```
 
 Use disposable credentials and a disposable bucket. Plain HTTP is appropriate only for the local-test mode exercised here.

@@ -35,9 +35,18 @@ Primitive upload-part requests accept caller-provided, base64-encoded CRC32, CRC
 
 The deterministic in-process suite covers wire behavior, retry and replay decisions, response limits, malformed data, body truncation, checksum mismatch, pagination loops, multipart cleanup, timeouts, and redirect credential containment.
 
-The local integration suite uses MinIO `RELEASE.2025-09-07T16-13-09Z`, pinned by manifest digest. It covers CRUD, path-style requests, conditional writes, ranges, metadata, pagination, multipart completion and abort, managed cleanup, concurrent operations, presigned URLs, empty objects, large transfers, and unusual keys. Virtual-hosted URL construction has unit coverage but is not exercised by the local MinIO runner because it would require wildcard local DNS and certificate setup. Run the suite with `./scripts/test-minio.sh`.
+The local integration suite runs the same cases against MinIO `RELEASE.2025-09-07T16-13-09Z`,
+RustFS `1.0.0-beta.9`, and SeaweedFS `4.40`, each pinned by manifest digest. It covers CRUD,
+path-style requests, conditional writes, ranges, metadata, pagination, multipart completion and
+abort, managed cleanup, concurrent operations, presigned URLs, empty objects, large transfers,
+and unusual keys. Virtual-hosted URL construction has unit coverage but is not exercised by the
+local runners because it would require wildcard local DNS and certificate setup. Run a provider
+with `./scripts/test-s3-compat.sh <minio|rustfs|seaweedfs>`.
 
-An ignored, `aws-compat` feature-gated suite covers AWS CRUD, ranges, conditional creation, listing, primitive multipart, and presigned requests with cleanup. It has not yet been executed for this release. The MinIO result must not be interpreted as proof of AWS compatibility.
+An ignored, `aws-compat` feature-gated suite covers AWS CRUD, ranges, conditional creation,
+listing, primitive multipart, and presigned requests with cleanup. It has not yet been executed
+for this release. Results from compatible servers must not be interpreted as proof of AWS
+compatibility.
 
 ## Unsupported API families
 
