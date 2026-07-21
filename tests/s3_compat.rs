@@ -1,4 +1,4 @@
-//! Opt-in compatibility tests against a real MinIO server.
+//! Opt-in compatibility tests against a real S3-compatible server.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -32,14 +32,15 @@ fn object_key(value: impl Into<String>) -> ObjectKey {
 }
 
 fn namespace(test: &str) -> String {
-    format!("minio/{}/{test}", std::process::id())
+    let provider = std::env::var("S3_COMPAT_PROVIDER").unwrap_or_else(|_| "custom".to_owned());
+    format!("{provider}/{}/{test}", std::process::id())
 }
 
 fn client() -> TestResult<S3Client> {
-    let endpoint = std::env::var("MINIO_S3_ENDPOINT")?;
-    let bucket = std::env::var("MINIO_S3_BUCKET")?;
-    let access_key = std::env::var("MINIO_ROOT_USER")?;
-    let secret_key = std::env::var("MINIO_ROOT_PASSWORD")?;
+    let endpoint = std::env::var("S3_COMPAT_ENDPOINT")?;
+    let bucket = std::env::var("S3_COMPAT_BUCKET")?;
+    let access_key = std::env::var("S3_COMPAT_ACCESS_KEY")?;
+    let secret_key = std::env::var("S3_COMPAT_SECRET_KEY")?;
     let credentials = Credentials::new(access_key, secret_key, None)?;
     let config = S3Config::builder()
         .endpoint(Endpoint::new(endpoint)?)
@@ -68,7 +69,7 @@ async fn delete_if_present(client: &S3Client, key: ObjectKey) {
 }
 
 #[tokio::test]
-#[ignore = "run through scripts/test-minio.sh"]
+#[ignore = "run through scripts/test-s3-compat.sh"]
 async fn crud_conditions_ranges_metadata_and_unusual_keys() -> TestResult {
     let client = client()?;
     let key = object_key(format!(
@@ -77,14 +78,14 @@ async fn crud_conditions_ranges_metadata_and_unusual_keys() -> TestResult {
     ));
     let payload = Bytes::from_static(b"0123456789-conditional-range-body");
     let mut metadata = BTreeMap::new();
-    metadata.insert("purpose".to_owned(), "minio-compatibility".to_owned());
+    metadata.insert("purpose".to_owned(), "s3-compatibility".to_owned());
     metadata.insert("mixed-case".to_owned(), "retained-value".to_owned());
 
     let mut put = PutObjectRequest::new(key.clone(), ByteStream::from_bytes(payload.clone()));
     put.content_type = Some("application/x-s3-wire-test".to_owned());
     put.user_metadata = metadata.clone();
     let uploaded = client.put_object(put).await?;
-    let e_tag = uploaded.e_tag.expect("MinIO returns an ETag");
+    let e_tag = uploaded.e_tag.expect("the S3 endpoint returns an ETag");
 
     let head = client
         .head_object(HeadObjectRequest::new(key.clone()))
@@ -147,7 +148,7 @@ async fn crud_conditions_ranges_metadata_and_unusual_keys() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "run through scripts/test-minio.sh"]
+#[ignore = "run through scripts/test-s3-compat.sh"]
 async fn pagination_empty_objects_and_concurrent_operations() -> TestResult {
     let client = client()?;
     let prefix = format!("{}/", namespace("pagination"));
@@ -213,7 +214,7 @@ async fn pagination_empty_objects_and_concurrent_operations() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "run through scripts/test-minio.sh"]
+#[ignore = "run through scripts/test-s3-compat.sh"]
 async fn multipart_complete_abort_cleanup_and_managed_upload() -> TestResult {
     let client = client()?;
     let key = object_key(format!("{}/manual", namespace("multipart")));
@@ -303,7 +304,7 @@ async fn multipart_complete_abort_cleanup_and_managed_upload() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "run through scripts/test-minio.sh"]
+#[ignore = "run through scripts/test-s3-compat.sh"]
 async fn large_one_shot_stream_and_presigned_urls() -> TestResult {
     let client = client()?;
     let streamed_key = object_key(format!("{}/streamed", namespace("presign")));
