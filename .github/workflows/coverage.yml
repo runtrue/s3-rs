@@ -1,0 +1,61 @@
+name: Coverage
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.97.1
+
+jobs:
+  coverage:
+    name: LLVM coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust with coverage tools
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component llvm-tools-preview
+          rustup default "$RUST_VERSION"
+      - name: Cache Cargo data
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-llvm-cov
+            target
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-coverage-0.8.7-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-coverage-0.8.7-
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+      - name: Install cargo-llvm-cov
+        run: |
+          if ! cargo llvm-cov --version 2>/dev/null | grep -Fq '0.8.7'; then
+            cargo install cargo-llvm-cov --locked --version 0.8.7
+          fi
+      - name: Measure coverage
+        run: |
+          mkdir -p coverage
+          cargo llvm-cov --locked --all-features --lcov --output-path coverage/lcov.info
+          cargo llvm-cov report --json --summary-only --output-path coverage/summary.json
+          cargo llvm-cov report --text --output-path coverage/report.txt
+          cargo llvm-cov report --html --output-dir coverage/html
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: llvm-coverage-${{ github.sha }}
+          path: coverage
+          if-no-files-found: error
+          retention-days: 14

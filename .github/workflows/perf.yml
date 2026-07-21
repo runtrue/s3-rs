@@ -1,0 +1,99 @@
+name: Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      comment_pr:
+        description: Comment a summary on a pull request
+        required: true
+        default: false
+        type: boolean
+      pr_number:
+        description: Pull request number to comment on when enabled
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.97.1
+
+jobs:
+  performance:
+    name: Deterministic benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: performance
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Cache Cargo data
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            tools/perf/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-perf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-perf-
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+      - name: Run deterministic microbenchmarks
+        run: |
+          mkdir -p "$RUNNER_TEMP/performance/microbench"
+          cargo bench --locked --features fuzzing --bench validation -- \
+            --noplot --sample-size 20 --warm-up-time 1 --measurement-time 3 \
+            | tee "$RUNNER_TEMP/performance/microbench/criterion.txt"
+          {
+            printf '# Criterion microbenchmarks\n\n```text\n'
+            cat "$RUNNER_TEMP/performance/microbench/criterion.txt"
+            printf '```\n'
+          } > "$RUNNER_TEMP/performance/microbench/criterion.md"
+          find target/criterion -type f \( -name estimates.json -o -name sample.json -o -name benchmark.json \) \
+            -exec cp --parents {} "$RUNNER_TEMP/performance/microbench" \;
+      - name: Run pinned MinIO performance workload
+        env:
+          S3_PERF_JSON: ${{ runner.temp }}/performance/minio.json
+          S3_PERF_MARKDOWN: ${{ runner.temp }}/performance/minio.md
+          S3_PERF_PAYLOAD_MIB: "64"
+          S3_PERF_LARGE_FILE_MIB: "256"
+          S3_PERF_PART_MIB: "8"
+          S3_PERF_MULTIPART_CONCURRENCY: "4"
+        run: ./tools/perf/run-minio.sh
+      - name: Upload performance reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/performance
+          if-no-files-found: error
+          retention-days: 30
+      - name: Comment on pull request
+        if: inputs.comment_pr && inputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$PR_NUMBER" in
+            *[!0-9]*|'') echo "pr_number must contain only digits" >&2; exit 1 ;;
+          esac
+          {
+            printf '## Performance run\n\n'
+            sed -n '1,120p' "$RUNNER_TEMP/performance/minio.md"
+            printf '\n\n[Workflow run](%s) contains the complete JSON and Markdown artifacts.\n' "$RUN_URL"
+          } > "$RUNNER_TEMP/performance/pr-comment.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/performance/pr-comment.md"

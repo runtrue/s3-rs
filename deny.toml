@@ -1,0 +1,47 @@
+[graph]
+all-features = true
+
+[advisories]
+# Security advisories and yanked releases must be fixed, not suppressed.
+yanked = "deny"
+ignore = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = [
+    { crate = "getrandom@0.2.17", reason = "ring still uses the pre-0.3 getrandom API" },
+    { crate = "syn@2.0.119", reason = "futures-macro has not migrated to syn 3" },
+    { crate = "windows-sys@0.52.0", reason = "ring still uses the 0.52 Windows bindings" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

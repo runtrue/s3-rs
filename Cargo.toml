@@ -12,11 +12,20 @@ categories = ["api-bindings", "asynchronous", "network-programming"]
 include = [
     "src/**",
     "benches/**",
+    "comparisons/size/REPORT.md",
+    "comparisons/size/results.json",
+    "docs/**",
     "examples/**",
+    "measurements/**",
     "tests/**",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "Cargo.toml",
+    "SECURITY.md",
     "README.md",
     "LICENSE",
+    "deny.toml",
+    "rust-toolchain.toml",
 ]
 
 [features]
@@ -40,13 +49,11 @@ hyper = { version = "1.8.1", features = ["client", "http1", "http2"] }
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "http2", "ring", "tls12", "webpki-roots"] }
 hyper-util = { version = "0.1.19", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 md-5 = "0.11.0"
-pin-project-lite = "0.2.17"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.0"
-subtle = "2.6.1"
 tempfile = "3.27.0"
 thiserror = "2.0.19"
 time = { version = "0.3.54", features = ["formatting", "macros", "parsing"] }
@@ -55,12 +62,10 @@ tokio-util = { version = "0.7.18", features = ["io", "rt"] }
 zeroize = "1.9.0"
 
 [dev-dependencies]
-axum = "0.8.9"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 proptest = "1.11.0"
-serde_json = "1.0.151"
+subtle = "2.6.1"
 tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
-tower = "0.5.3"
 
 [lints.rust]
 unsafe_code = "forbid"
