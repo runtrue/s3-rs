@@ -7,15 +7,16 @@ Contributions should preserve the crate's explicit resource bounds, replay rules
 The repository pins Rust 1.97.1 in `rust-toolchain.toml`. Install the pinned toolchain through rustup, then run:
 
 ```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
-cargo package
-cargo publish --dry-run
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+cargo package --locked
+cargo publish --locked --dry-run
 ```
 
 The dry run validates packaging and must not be replaced with a publishing command.
+Maintainers preparing a release should also follow the [release checklist](docs/releasing.md).
 
 ## Change requirements
 
@@ -31,7 +32,10 @@ Dependencies should have a focused purpose, a maintained release, compatible lic
 
 ## Integration tests
 
-Run `./scripts/test-minio.sh` for the pinned MinIO suite. It requires Docker and `curl` and removes its isolated container on exit. Real AWS tests are opt-in and must use a dedicated bucket or test prefix with least-privilege, short-lived credentials; see [testing](docs/testing.md).
+Run `./scripts/test-s3-compat.sh <minio|rustfs|seaweedfs>` for a pinned endpoint suite. It
+requires Docker and `curl` and removes its isolated container on exit. Real AWS tests are opt-in
+and must use a dedicated bucket or test prefix with least-privilege, short-lived credentials; see
+[testing](docs/testing.md).
 
 ## Pull requests
 

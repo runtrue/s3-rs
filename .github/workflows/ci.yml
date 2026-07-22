@@ -87,9 +87,20 @@ jobs:
       - name: Run test suite
         run: cargo test --locked --all-targets --all-features
 
-  minio:
-    name: MinIO compatibility
+  s3-compat:
+    name: ${{ matrix.label }} compatibility
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: minio
+            label: MinIO
+          - provider: rustfs
+            label: RustFS
+          - provider: seaweedfs
+            label: SeaweedFS
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,12 +116,12 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-minio-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-s3-${{ matrix.provider }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-minio-
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-s3-${{ matrix.provider }}-
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
-      - name: Run pinned MinIO compatibility suite
-        run: ./scripts/test-minio.sh
+      - name: Run pinned ${{ matrix.provider }} compatibility suite
+        run: ./scripts/test-s3-compat.sh "${{ matrix.provider }}"
 
   package:
     name: Package and publish dry-run

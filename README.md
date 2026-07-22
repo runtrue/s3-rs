@@ -1,204 +1,262 @@
 # s3-wire
 
-`s3-wire` is a Tokio-native S3-compatible client for bounded object transfers. It implements SigV4, typed object keys, replay-aware retries, streaming downloads, and managed or primitive multipart uploads without depending on another S3 client.
+[![crates.io](https://img.shields.io/crates/v/s3-wire.svg)](https://crates.io/crates/s3-wire)
+[![docs.rs](https://docs.rs/s3-wire/badge.svg)](https://docs.rs/s3-wire)
+[![CI](https://github.com/runtrue/s3-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/runtrue/s3-rs/actions/workflows/ci.yml)
 
-The crate requires Rust 1.97.1.
+Async, streaming S3-compatible client for Rust with explicit bounds on memory, retries, timeouts, and remote input.
 
-```toml
-[dependencies]
-s3-wire = "0.1"
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
+## Highlights
+
+- Tokio-native uploads and downloads with backpressure
+- Replay-aware retries for in-memory and file-backed request bodies
+- Managed multipart uploads with bounded concurrency and abort cleanup
+- SigV4 request signing and presigned GET and PUT URLs
+- Typed object keys, ranges, conditions, checksums, and multipart state
+- HTTPS by default, secret-redacting types, and bounded XML parsing
+- Integration-tested against pinned MinIO, RustFS, and SeaweedFS releases
+
+`s3-wire` requires Rust 1.97.1 and does not depend on another S3 client.
+
+## Install
+
+```sh
+cargo add s3-wire
+cargo add tokio --features fs,macros,rt-multi-thread
 ```
 
-## Client configuration
+## Quick start
 
-The default credential provider reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`. HTTPS is required unless local-test HTTP is explicitly enabled.
+The default credential provider reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`. Remote endpoints must use HTTPS; plain HTTP is an explicit local-testing opt-in.
 
 ```rust,no_run
-use s3_wire::{AddressingStyle, Endpoint, S3Client, S3Config, S3Error};
+use s3_wire::{
+    ByteStream, Endpoint, GetObjectRequest, ObjectKey, PutObjectRequest, S3Client, S3Config,
+};
 
-fn client() -> Result<S3Client, S3Error> {
+async fn put_then_get() -> Result<(), Box<dyn std::error::Error>> {
     let region = "us-east-1";
     let config = S3Config::builder()
         .endpoint(Endpoint::for_aws_region(region)?)
         .region(region)
         .bucket("artifact-bucket")
-        .addressing_style(AddressingStyle::Path)
         .build()?;
-    S3Client::new(config)
+    let client = S3Client::new(config)?;
+
+    let key = ObjectKey::new("artifacts/report.json")?;
+    let mut upload = PutObjectRequest::new(
+        key.clone(),
+        ByteStream::from_bytes(br#"{"status":"complete"}"#.as_slice()),
+    );
+    upload.content_type = Some("application/json".into());
+    client.put_object(upload).await?;
+
+    let download = client.get_object(GetObjectRequest::new(key)).await?;
+    let mut destination = tokio::fs::File::create("report.json").await?;
+    let written = download.body.write_to(&mut destination).await?;
+
+    println!("downloaded {written} bytes");
+    Ok(())
 }
 ```
 
-Use `StaticCredentialsProvider` or implement the async `CredentialsProvider` trait when credentials do not come from the environment. `CachedCredentialsProvider` serializes refreshes and respects credential expiration.
+Run the complete CRUD, range, listing, and conditional-write example with:
 
-## Object transfers
-
-Upload in-memory bytes:
-
-```rust,no_run
-# use s3_wire::{ByteStream, ObjectKey, PutObjectRequest, S3Error};
-# async fn upload(client: &s3_wire::S3Client) -> Result<(), S3Error> {
-let key = ObjectKey::new("artifacts/report.json")?;
-let mut request = PutObjectRequest::new(
-    key,
-    ByteStream::from_bytes(br#"{"status":"complete"}"#.as_slice()),
-);
-request.content_type = Some("application/json".into());
-client.put_object(request).await?;
-# Ok(())
-# }
+```sh
+cargo run --example basic
 ```
 
-Upload a file without retaining the complete file in memory. The client first hashes the file into an immutable disk-backed snapshot, then streams that snapshot; retries read the same bytes.
+The example uses the standard AWS credential variables plus `S3_BUCKET`, and supports both AWS and custom endpoints.
+
+## Configuration and credentials
+
+`S3Config` validates addressing, timeouts, retry policy, response limits, multipart bounds, and the credential provider before a client is created:
 
 ```rust,no_run
-# use s3_wire::{ByteStream, ObjectKey, PutObjectRequest, S3Error};
-# async fn upload_file(client: &s3_wire::S3Client) -> Result<(), S3Error> {
-let request = PutObjectRequest::new(
-    ObjectKey::new("artifacts/archive.tar")?,
-    ByteStream::from_path("archive.tar"),
-);
-client.put_object(request).await?;
-# Ok(())
-# }
+use std::sync::Arc;
+use std::time::Duration;
+
+use s3_wire::{
+    AddressingStyle, CachedCredentialsProvider, Credentials, Endpoint, RetryPolicy, S3Client,
+    S3Config, StaticCredentialsProvider,
+};
+
+fn configured_client() -> Result<S3Client, Box<dyn std::error::Error>> {
+    let credentials = Credentials::new("access-key", "secret-key", None)?;
+    let static_provider = Arc::new(StaticCredentialsProvider::new(credentials));
+    let cached_provider = Arc::new(CachedCredentialsProvider::new(static_provider));
+    let retries = RetryPolicy::new(
+        4,
+        Duration::from_millis(100),
+        Duration::from_secs(5),
+        Duration::from_secs(20),
+    )?;
+
+    let config = S3Config::builder()
+        .endpoint(Endpoint::new("https://s3.example.com")?)
+        .region("us-east-1")
+        .bucket("artifact-bucket")
+        .addressing_style(AddressingStyle::Path)
+        .connect_timeout(Duration::from_secs(5))
+        .attempt_timeout(Duration::from_secs(30))
+        .operation_timeout(Duration::from_secs(5 * 60))
+        .idle_body_timeout(Duration::from_secs(30))
+        .retry_policy(retries)
+        .multipart_part_size(8 * 1024 * 1024)
+        .multipart_concurrency(4)
+        .max_multipart_in_flight_bytes(32 * 1024 * 1024)
+        .credentials_provider(cached_provider)
+        .build()?;
+
+    Ok(S3Client::new(config)?)
+}
 ```
 
-Stream a download to any Tokio `AsyncWrite` implementation:
+The default `EnvironmentCredentialsProvider` needs no explicit configuration. Use `StaticCredentialsProvider` for an injected immutable value, or implement the async `CredentialsProvider` trait for a workload-specific source. `CachedCredentialsProvider` coalesces concurrent refreshes and respects credential expiration.
 
-```rust,no_run
-# use s3_wire::{GetObjectRequest, ObjectKey, S3Error};
-# async fn download(client: &s3_wire::S3Client) -> Result<(), S3Error> {
-let response = client
-    .get_object(GetObjectRequest::new(ObjectKey::new("artifacts/archive.tar")?))
-    .await?;
-let mut destination = tokio::fs::File::create("archive.tar")
-    .await
-    .map_err(S3Error::transport)?;
-response.body.write_to(&mut destination).await?;
-# Ok(())
-# }
-```
+## Upload sources
 
-`ResponseStream` also implements `futures_core::Stream<Item = Result<bytes::Bytes, S3Error>>` for callers that process chunks directly. Range requests use `GetObjectRequest::range` and `ByteRange`.
+Choose a body based on how it should behave if a request must be retried:
 
-For immutable publication, set `If-None-Match: *`:
+| Source | Replayable | Memory behavior | Notes |
+| --- | --- | --- | --- |
+| `ByteStream::from_bytes` | Yes | Retains the input bytes | Best for small, already-buffered values |
+| `ByteStream::from_path` | Yes | Streams from a private disk snapshot | Requires temporary disk space |
+| `ByteStream::from_stream` | No | Streams with backpressure | Caller supplies exact length and SHA-256 |
 
-```rust,no_run
-# use s3_wire::{ByteStream, ObjectKey, PutObjectRequest, S3Error};
-# async fn create(client: &s3_wire::S3Client) -> Result<(), S3Error> {
-let mut request = PutObjectRequest::new(
-    ObjectKey::new("manifests/sha256.json")?,
-    ByteStream::from_bytes(b"{}".as_slice()),
-);
-request.conditions.if_none_match = Some("*".into());
-client.put_object(request).await?;
-# Ok(())
-# }
-```
+File uploads are hashed into an immutable temporary snapshot before the first request. A retry therefore sends the same bytes even if the original file changes.
 
 ## Multipart uploads
 
-Managed multipart upload bounds concurrent part buffers using `multipart_part_size`, `multipart_concurrency`, and `max_multipart_in_flight_bytes` from `S3Config`:
+Managed multipart handles part scheduling, bounded in-flight bytes, completion, and best-effort abort cleanup:
 
 ```rust,no_run
-# use s3_wire::{ManagedMultipartUploadRequest, ObjectKey, S3Error};
-# async fn managed(client: &s3_wire::S3Client) -> Result<(), S3Error> {
-let request = ManagedMultipartUploadRequest::from_path(
-    ObjectKey::new("artifacts/large-image.raw")?,
-    "large-image.raw",
-)
-.with_content_type("application/octet-stream");
-client.multipart_upload(request).await?;
-# Ok(())
-# }
+use s3_wire::{ManagedMultipartUploadRequest, ObjectKey, S3Client};
+
+async fn upload_large_file(client: &S3Client) -> Result<(), Box<dyn std::error::Error>> {
+    let request = ManagedMultipartUploadRequest::from_path(
+        ObjectKey::new("artifacts/archive.tar")?,
+        "archive.tar",
+    )
+    .with_content_type("application/x-tar");
+
+    client.multipart_upload(request).await?;
+    Ok(())
+}
 ```
 
-Dropping the managed upload future cancels outstanding parts. If S3 has created an upload, the client-owned task retains the upload ID and attempts abort. A normal upload failure waits for abort; if abort fails, `S3Error::cleanup_failure()` preserves the cleanup result alongside the primary failure. The managed operation does not expose a destination `If-None-Match` precondition, so callers publishing immutable names must serialize writers or use a separate publication protocol.
+Multipart selection is intentional: `put_object` never switches modes automatically. Call `multipart_upload` when application policy says a source should use multipart. Primitive create, upload-part, complete, list, and abort operations are also available when the application must own multipart state.
 
-Primitive multipart operations expose state explicitly:
-
-```rust,no_run
-# use s3_wire::{ByteStream, CompleteMultipartUploadRequest, CompletedPart, CreateMultipartUploadRequest, ObjectKey, PartNumber, S3Error, UploadPartRequest};
-# async fn primitive(client: &s3_wire::S3Client) -> Result<(), Box<dyn std::error::Error>> {
-let key = ObjectKey::new("artifacts/parts.bin")?;
-let created = client
-    .create_multipart_upload(CreateMultipartUploadRequest::new(key.clone()))
-    .await?;
-let upload_id = created.upload_id().clone();
-
-let first = client
-    .upload_part(UploadPartRequest::new(
-        key.clone(),
-        upload_id.clone(),
-        PartNumber::new(1).expect("one is a valid part number"),
-        ByteStream::from_bytes(vec![0_u8; 5 * 1024 * 1024]),
-    ))
-    .await?;
-let completed = CompletedPart::new(1, first.e_tag)?.with_checksum(first.checksum);
-client
-    .complete_multipart_upload(CompleteMultipartUploadRequest::new(
-        key,
-        upload_id,
-        vec![completed],
-    )?)
-    .await?;
-# Ok(())
-# }
-```
-
-Primitive callers own abort cleanup and should retain `UploadId` until completion or a successful `abort_multipart_upload`.
+Dropping a managed upload cancels outstanding parts and attempts an abort after an upload ID exists. Process termination can still leave stale uploads, so long-running deployments should also run bounded stale-upload cleanup.
 
 ## Listing and presigning
 
+`list_objects_v2_all` follows continuation tokens up to a caller-supplied page limit. `presigned_get` and `presigned_put` return a redacted `PresignedUrl`:
+
 ```rust,no_run
-# use std::time::Duration;
-# use s3_wire::{ListObjectsV2Request, ObjectKey, S3Error};
-# async fn list_and_presign(client: &s3_wire::S3Client) -> Result<(), S3Error> {
-let pages = client
-    .list_objects_v2_all(
-        ListObjectsV2Request {
-            prefix: Some("artifacts/".into()),
-            ..ListObjectsV2Request::default()
-        },
-        100,
-    )
-    .await?;
-for object in pages.iter().flat_map(|page| &page.objects) {
-    println!("{}", object.key);
+use std::time::Duration;
+
+use s3_wire::{ObjectKey, S3Client};
+
+async fn share_download(client: &S3Client) -> Result<(), Box<dyn std::error::Error>> {
+    let key = ObjectKey::new("artifacts/report.json")?;
+    let url = client
+        .presigned_get(&key, Duration::from_secs(300))
+        .await?;
+
+    // Exposure is explicit because the query string contains signing material.
+    send_to_authorized_caller(url.expose());
+    Ok(())
 }
 
-let key = ObjectKey::new("artifacts/report.json")?;
-let signed = client.presigned_get(&key, Duration::from_secs(300)).await?;
-// Exposure is explicit because the query string contains signing material.
-send_url_to_authorized_caller(signed.expose());
-# Ok(())
-# }
-# fn send_url_to_authorized_caller(_: &str) {}
+fn send_to_authorized_caller(_url: &str) {}
 ```
 
-## Supported operations
+Presigned URLs are bearer credentials. Keep their lifetime short and do not place exposed URLs in logs, analytics, or error messages.
 
-The public client includes `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `DeleteObjects`, `CopyObject`, `ListObjectsV2`, create/upload/complete/abort multipart, multipart listing, range reads, conditional headers, and presigned GET and PUT URLs. See [compatibility](docs/compatibility.md) for operation details and test status.
+## Error handling
 
-## Limits and non-goals
+`S3Error` separates a stable category from optional service metadata. Its `Display` and `Debug` implementations omit transport text and cleanup details that may contain credentials or signed URLs:
 
-- Arbitrary AWS chunked SigV4 uploads are not implemented. `ByteStream::from_stream` requires the exact length and SHA-256 digest and is one-shot, so it is not retried.
-- In-memory and file-backed bodies are replayable. File-backed bodies use a private disk snapshot; callers must provide enough temporary storage.
-- Multipart selection is explicit: call `multipart_upload` when the source should use multipart. `multipart_threshold` is validated configuration available to application policy; `put_object` does not switch modes automatically.
-- PutObject can calculate a SHA-256 checksum. CRC32, CRC32C, CRC64/NVME, and SHA-1 upload calculation are not implemented. Primitive multipart accepts validated caller-supplied base64 checksums. Full-object SHA-256 download checksums are verified at end of stream; other returned checksum values are exposed but not recalculated.
-- Managed multipart has no destination precondition. Cancellation owns abort cleanup, but process termination cannot complete an in-flight network cleanup; stale uploads should also be reclaimed through a bounded listing policy.
-- Metadata-service credential providers, bucket administration, ACLs, policies, version listing, and object encryption configuration are outside this crate's current API.
-- The pinned MinIO suite has been run locally. The real AWS compatibility suite is implemented as an opt-in test but has not yet been executed for this release, so MinIO results are not evidence of AWS compatibility.
+```rust
+use s3_wire::{ErrorCategory, S3Error};
+
+fn report(error: &S3Error) {
+    match error.category() {
+        ErrorCategory::NotFound => eprintln!("object does not exist"),
+        ErrorCategory::Timeout => eprintln!("timeout during {:?}", error.timeout_phase()),
+        ErrorCategory::Throttling => eprintln!("request was throttled"),
+        _ => eprintln!("S3 request failed: {}", error.message()),
+    }
+
+    if let Some(request_id) = error.request_id() {
+        eprintln!("request id: {request_id}");
+    }
+    if error.cleanup_failure().is_some() {
+        eprintln!("multipart cleanup also failed");
+    }
+}
+```
+
+Retries are applied inside the client only when the classification, attempt and elapsed-time limits, operation deadline, and body replayability all permit another attempt.
+
+## Examples
+
+Focused, runnable examples live in [`examples/README.md`](examples/README.md):
+
+- [Basic object lifecycle](examples/basic.rs)
+- [Streaming download to a file](examples/download_file.rs)
+- [One-shot streaming upload](examples/stream_upload.rs)
+- [Managed multipart upload](examples/multipart_upload.rs)
+- [Presigned GET and PUT](examples/presign.rs)
+- [Copy and batch delete](examples/copy_and_delete.rs)
+- [Content-addressed artifact-store adapter](examples/artifact_store.rs)
+
+## Compatibility
+
+The client currently covers object upload, download, inspection, deletion, batch deletion, server-side copy, listing, range reads, conditional headers, presigning, and primitive or managed multipart uploads.
+
+The pinned MinIO, RustFS, and SeaweedFS suites run in CI. An opt-in AWS suite exists but has not yet been executed for this release, so compatible-server results are not presented as proof of AWS compatibility. See [S3 compatibility](docs/compatibility.md) for the operation matrix, checksum behavior, test status, and unsupported API families.
+
+## Scope and limits
+
+- The client is async-only and configured for one bucket at a time.
+- AWS chunked SigV4 streaming is not implemented.
+- Automatic upload-checksum calculation currently supports SHA-256.
+- Managed multipart does not expose a destination `If-None-Match` condition.
+- Bucket administration, ACLs, policies, version listing, metadata-service credentials, and encryption configuration are outside the current API.
+
+See the [security model](docs/security-model.md) for deployment responsibilities and [architecture](docs/architecture.md) for retry, transport, and ownership details.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md)
-- [Security model](docs/security-model.md)
-- [Compatibility](docs/compatibility.md)
-- [Testing](docs/testing.md)
-- [Performance and size](docs/performance.md)
-- [sandboxd integration contract](docs/sandboxd-integration.md)
-- [Security reporting](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
+| Guide | What it covers |
+| --- | --- |
+| [API reference](https://docs.rs/s3-wire) | Public types, methods, and crate-level quick start |
+| [Architecture](docs/architecture.md) | Modules, request flow, retry rules, and transfer ownership |
+| [S3 compatibility](docs/compatibility.md) | Operations, signing, checksums, tested services, and non-goals |
+| [Security model](docs/security-model.md) | Trust boundaries, controls, secret handling, and operator duties |
+| [Testing](docs/testing.md) | Local checks, MinIO, AWS, property tests, fuzzing, and benchmarks |
+| [Performance and size](docs/performance.md) | Retained measurements, reproduction, and interpretation |
+| [sandboxd integration](docs/sandboxd-integration.md) | Content-addressed publication, reads, garbage collection, and cleanup |
+| [Examples](examples/README.md) | Runnable object, streaming, multipart, presigning, and integration flows |
+| [Releasing](docs/releasing.md) | Package validation, tagging, publication, and post-release checks |
 
-The retained [microbenchmark baseline](measurements/microbench-2026-07-21.md), [local MinIO measurement](measurements/results/minio-local.md), and [release-build comparison](comparisons/size/REPORT.md) record their toolchains and caveats. They are measurements of specific runs, not general performance or compatibility claims.
+Also see [the API example](examples/basic.rs), [security reporting](SECURITY.md), and [contributing](CONTRIBUTING.md).
+
+## Development
+
+Run the fast validation set after local changes:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+```
+
+The pinned endpoint suites run with `./scripts/test-s3-compat.sh <minio|rustfs|seaweedfs>`. Packaging and release checks are described in [testing](docs/testing.md).
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

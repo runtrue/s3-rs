@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-Security fixes are applied to the default branch. After the first functional release, they will also be applied to the latest supported release line. The `0.0.0` name-establishment package and older development revisions are not maintained as separate security branches.
+Security fixes are applied to the default branch and the latest supported release line. The `0.0.0` name-establishment package and older development revisions are not maintained as separate security branches.
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities through GitHub's private vulnerability reporting for `runtrue/s3-rs`. Do not open a public issue for a vulnerability that could expose credentials, signed URLs, object contents, or a remotely exploitable parsing or transport flaw.
+Report suspected vulnerabilities through [GitHub's private vulnerability reporting](https://github.com/runtrue/s3-rs/security/advisories/new). Do not open a public issue for a vulnerability that could expose credentials, signed URLs, object contents, or a remotely exploitable parsing or transport flaw.
 
 Include the affected version or revision, deployment conditions, reproduction steps, expected impact, and any known mitigations. Remove real credentials, authorization headers, signed URL query strings, bucket names, and object data from the report. Use synthetic credentials when a reproduction requires request material.
 

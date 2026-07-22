@@ -1,44 +1,101 @@
 # S3 compatibility
 
+`s3-wire` focuses on object transfer rather than the full S3 control plane. It supports AWS-style SigV4 and both path-style and virtual-hosted requests, but compatibility claims are limited to operations and services that have actually been tested.
+
 ## Operation coverage
 
-| Capability | Public API | Notes |
+| Capability | Public API | Behavior |
 | --- | --- | --- |
-| Upload object | `put_object` | Bytes, immutable file snapshots, or a one-shot exact-length/digest stream |
-| Download object | `get_object` | Streaming body, ranges, conditions, version ID, bounded idle and operation timeouts |
-| Inspect object | `head_object` | Metadata, conditions, version ID |
+| Upload object | `put_object` | Bytes, immutable file snapshots, or a one-shot exact-length stream |
+| Download object | `get_object` | Streaming body, ranges, conditions, version ID, and bounded timeouts |
+| Inspect object | `head_object` | Metadata, conditions, and version ID |
 | Delete object | `delete_object` | Version ID and ETag condition |
 | Batch delete | `delete_objects` | 1–1,000 validated entries with per-object results |
-| Server-side copy | `copy_object` | Source version and source conditions; embedded HTTP-200 error detection |
-| Object listing | `list_objects_v2`, `list_objects_v2_all` | Delimiter, prefix, owner, page size, token-loop detection, explicit page bound |
-| Multipart | create, upload part, complete, abort, list | Validated upload IDs, part order, ETags, checksums, bounded response documents |
-| Managed multipart | `multipart_upload` | Bytes or file source, bounded scheduling, owned abort cleanup |
-| Presigning | `presigned_get`, `presigned_put` | SigV4 query signing; redacted URL wrapper |
+| Server-side copy | `copy_object` | Source version and conditions; detects embedded errors in HTTP 200 responses |
+| List objects | `list_objects_v2`, `list_objects_v2_all` | Prefix, delimiter, owner, page size, token-loop detection, and explicit page bound |
+| Primitive multipart | create, upload part, complete, abort, list | Validated IDs, part order, ETags, checksums, and bounded response documents |
+| Managed multipart | `multipart_upload` | Replayable bytes or files, bounded scheduling, and owned abort cleanup |
+| Presigning | `presigned_get`, `presigned_put` | SigV4 query signing with a redacted URL wrapper |
 
-Path-style and virtual-hosted addressing are supported. Custom endpoint base paths and unusual valid object keys are encoded without assigning filesystem or browser URL semantics to the key.
+Custom endpoint base paths and unusual valid object keys are encoded without treating keys as filesystem or browser paths. Repeated slashes and dot segments are preserved.
 
-The client does not automatically promote PutObject to multipart. Applications may use the configured `multipart_threshold` as their selection policy and invoke `multipart_upload` explicitly.
+Multipart promotion is not automatic. Applications choose `put_object` or `multipart_upload` explicitly and may use the configured `multipart_threshold` as part of that policy.
+
+## Addressing and endpoints
+
+- `AddressingStyle::Path` places the bucket in the URL path.
+- `AddressingStyle::VirtualHosted` places the bucket in the host.
+- The configured endpoint may be a standard AWS region endpoint or a validated S3-compatible base URL.
+- HTTPS is required unless `allow_http_for_local_testing` is enabled explicitly.
+- Custom-endpoint redirects are not followed.
+
+Virtual-hosted URL construction is covered by unit tests. The local S3-compatible suites use path style because virtual-hosted local testing would require wildcard DNS and certificates.
 
 ## Authentication and signing
 
-The client implements SigV4 header signing and query presigning for S3, including region/service scope and session tokens. The signing module is covered by retained deterministic vectors and AWS documentation vectors. Credentials may come from static, environment, cached, or application-defined async providers.
+The client implements SigV4 header signing and query presigning for S3, including region and service scope and optional session tokens. Retained deterministic tests include AWS documentation vectors.
 
-AWS chunked SigV4 streaming is not implemented. A non-seekable `ByteStream::from_stream` must include the exact byte length and SHA-256 digest, and the resulting one-shot request is not retried. Byte and file sources are replayable and may be retried when the operation classification permits.
+Credentials may be static, loaded from the standard AWS environment variables, cached with expiration, or supplied through an application-defined async `CredentialsProvider`.
 
-## Checksum behavior
+AWS chunked SigV4 streaming is not implemented. `ByteStream::from_stream` therefore requires the exact byte length and SHA-256 digest and produces a one-shot request that is not retried. Byte and file sources are replayable and may be retried when error classification and deadlines allow it.
 
-All request payloads use a SHA-256 SigV4 payload hash. PutObject can add the S3 SHA-256 checksum header when `ChecksumAlgorithm::Sha256` is selected. Selecting CRC32, CRC32C, CRC64/NVME, or SHA-1 for automatic PutObject calculation returns `UnsupportedOperation`.
+## Checksums
 
-Primitive upload-part requests accept caller-provided, base64-encoded CRC32, CRC32C, CRC64/NVME, SHA-1, or SHA-256 values and validate their encoded length and padding. Returned checksum headers are syntax-validated and exposed. Streaming GET verifies a returned full-object SHA-256 checksum at EOF; it does not recalculate other algorithms or compare range bodies against a full-object checksum.
+Every signed payload has a SigV4 SHA-256 payload hash. Additional S3 checksum behavior is narrower:
+
+| Direction | Behavior |
+| --- | --- |
+| PutObject | The client can calculate and send SHA-256 |
+| UploadPart | Primitive requests accept validated caller-supplied CRC32, CRC32C, CRC64/NVME, SHA-1, or SHA-256 |
+| GetObject | Returned checksum headers are validated and exposed; a full-object SHA-256 value is recalculated and checked at EOF |
+| Range GET | A range body is not compared with a full-object checksum |
+
+Selecting CRC32, CRC32C, CRC64/NVME, or SHA-1 for automatic PutObject calculation returns `UnsupportedOperation`.
 
 ## Tested services
 
-The deterministic in-process suite covers wire behavior, retry and replay decisions, response limits, malformed data, body truncation, checksum mismatch, pagination loops, multipart cleanup, timeouts, and redirect credential containment.
+### Deterministic local tests
 
-The local integration suite uses MinIO `RELEASE.2025-09-07T16-13-09Z`, pinned by manifest digest. It covers CRUD, path-style requests, conditional writes, ranges, metadata, pagination, multipart completion and abort, managed cleanup, concurrent operations, presigned URLs, empty objects, large transfers, and unusual keys. Virtual-hosted URL construction has unit coverage but is not exercised by the local MinIO runner because it would require wildcard local DNS and certificate setup. Run the suite with `./scripts/test-minio.sh`.
+The in-process suite covers wire shape, retry and replay decisions, response limits, malformed data, truncated bodies, checksum mismatch, pagination loops, multipart cleanup, timeouts, and redirect credential containment. It requires no external S3 service.
 
-An ignored, `aws-compat` feature-gated suite covers AWS CRUD, ranges, conditional creation, listing, primitive multipart, and presigned requests with cleanup. It has not yet been executed for this release. The MinIO result must not be interpreted as proof of AWS compatibility.
+### S3-compatible services
 
-## Unsupported API families
+The integration suite runs the same cases against MinIO `RELEASE.2025-09-07T16-13-09Z`, RustFS `1.0.0-beta.9`, and SeaweedFS `4.40`, each pinned by manifest digest. It covers:
 
-The crate does not expose bucket creation or administration, ACLs, bucket policies, lifecycle rules, notification configuration, object version listing, S3 Select, object lock administration, transfer acceleration, access points, multipart copy, or application-managed encryption headers. Unknown or unsupported service behavior is reported through `S3Error` rather than emulated with an unbounded fallback.
+- create, read, inspect, copy, list, and delete flows;
+- conditional writes, ranges, metadata, empty objects, large objects, and unusual keys;
+- primitive multipart completion and abort;
+- managed multipart success and cleanup;
+- concurrent operations; and
+- presigned GET and PUT URLs.
+
+Run a provider with:
+
+```sh
+./scripts/test-s3-compat.sh minio
+./scripts/test-s3-compat.sh rustfs
+./scripts/test-s3-compat.sh seaweedfs
+```
+
+Virtual-hosted URL construction has unit coverage but is not exercised by the local runners because it would require wildcard local DNS and certificate setup.
+
+### AWS S3
+
+An ignored, `aws-compat` feature-gated suite covers AWS CRUD, ranges, conditional creation, listing, primitive multipart, and presigned requests with cleanup. It has not yet been executed for this release.
+
+Results from compatible servers are not proof of AWS compatibility.
+
+## Outside the current API
+
+The crate does not currently expose:
+
+- bucket creation or administration;
+- ACLs, bucket policies, lifecycle rules, or notifications;
+- object version listing;
+- S3 Select or object-lock administration;
+- transfer acceleration or access points;
+- multipart copy;
+- application-managed encryption headers; or
+- EC2, ECS, or web-identity credential fetching.
+
+Unsupported service behavior is returned as `S3Error` rather than emulated through an unbounded fallback.

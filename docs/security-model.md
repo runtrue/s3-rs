@@ -1,55 +1,107 @@
 # Security model
 
-## Protected assets
+`s3-wire` protects request credentials and bounds untrusted service input, but it cannot secure the host, IAM policy, bucket policy, endpoint ownership, or data after an application explicitly exposes it.
 
-The client treats access keys, secret keys, session tokens, authorization headers, presigned URL query strings, upload IDs, and caller object data as sensitive. Request IDs, sanitized service error codes, object metadata, and object keys may still be operationally sensitive and should be logged according to the application's data policy.
+## Protected data
+
+The client treats these values as sensitive:
+
+- access keys, secret keys, and session tokens;
+- authorization headers and presigned URL query strings;
+- multipart upload IDs; and
+- caller object data.
+
+Request IDs, sanitized service codes, object metadata, bucket names, and object keys do not contain signing secrets by definition, but they may still be sensitive under an application's data policy.
 
 ## Trust boundaries
 
-The calling application controls configuration, credential providers, object keys, upload bodies, and destinations for downloaded bytes. The endpoint and every S3 response are untrusted network input. DNS, public certificate roots, the Tokio runtime, process memory, and the host temporary directory are part of the deployment trust base.
+| Controlled by the application | Treated as untrusted | Part of the deployment trust base |
+| --- | --- | --- |
+| Configuration, credentials providers, keys, upload bodies, download destinations | Endpoint responses, headers, XML, redirects, lengths, checksums, pagination tokens | DNS, public certificate roots, Tokio, process memory, host filesystem, temporary directory |
+
+The crate validates what crosses its API and network boundaries. Operators remain responsible for the trust base.
 
 ## Transport and endpoint controls
 
-- HTTPS with Rustls certificate and hostname verification is the default.
-- Plain HTTP requires `allow_http_for_local_testing`; it should be restricted to loopback or a trusted diagnostic network.
+- HTTPS uses Rustls certificate and hostname verification by default.
+- Plain HTTP requires `allow_http_for_local_testing` and should be limited to loopback or a trusted diagnostic network.
 - Endpoints must be absolute HTTP(S) URLs without user information, query strings, or fragments.
-- The HTTP transport does not follow redirects. Controlled region correction applies only to validated standard AWS S3 HTTPS hosts and re-signs the new request.
-- Virtual-hosted bucket names and path-style bucket components are validated before signing.
-- Object keys are UTF-8 values of at most 1,024 encoded bytes. URL encoding preserves S3 key semantics, including repeated slashes and dot segments.
+- Redirects are not followed automatically.
+- Region correction is limited to validated standard AWS S3 HTTPS hosts and is re-signed for the corrected endpoint.
+- Bucket names are validated for the selected addressing style before signing.
+- Object keys are UTF-8 values up to 1,024 encoded bytes; repeated slashes and dot segments are preserved as key data.
 
-## Credential controls
+Custom endpoint ownership and DNS should be verified before credentials are provided.
 
-Credentials use `secrecy::SecretString`; standard `Debug` and `Display` implementations do not expose secret keys, session tokens, presigned URLs, or upload IDs. `S3Error` retains only the source error type, not source text that could contain a URL, header, or response body. Credential refreshes are synchronized by the caching provider to prevent a refresh storm.
+## Credential and secret handling
 
-Presigned URLs are bearer credentials. `PresignedUrl` formatting is redacted and access requires `expose()` or `into_exposed()`. Applications must limit expiration, transport them over an authenticated channel, avoid logs and analytics, and consider them compromised after accidental disclosure.
+Credentials use `secrecy::SecretString`. Standard `Debug` and `Display` output does not reveal secret keys, session tokens, presigned URLs, or upload IDs. `S3Error` retains source error types without source text that might contain a URL, header, or response body.
 
-The environment provider does not write credentials. The crate does not implement EC2, ECS, or web-identity metadata calls and does not persist credentials.
+`CachedCredentialsProvider` serializes refreshes to avoid a refresh storm. The environment provider reads credentials but does not write or persist them. The crate currently makes no EC2, ECS, or web-identity metadata calls.
 
-## Remote-input controls
+Presigned URLs are bearer credentials. `PresignedUrl` is redacted by default and requires `expose()` or `into_exposed()` to access the complete URL. Applications should:
 
-- XML and error bodies have separate configurable byte limits; list-all operations require a caller-supplied maximum page count.
-- XML containing DTD or entity declarations is rejected before parsing. External entity resolution and entity expansion are not supported.
-- Header values, integer fields, timestamps, ranges, part numbers, checksums, ETags, pagination tokens, and upload IDs are validated before use.
-- Download streams reject a body that exceeds or ends before its declared content length. A supported full-object SHA-256 response checksum is checked at end of stream.
-- The crate forbids unsafe code and treats malformed service data as structured errors rather than panicking.
+- use the shortest practical expiration;
+- send the URL only over an authenticated channel;
+- exclude it from logs, traces, analytics, and error messages; and
+- treat it as compromised after accidental disclosure.
+
+## Untrusted response handling
+
+The client places explicit bounds around remote input:
+
+- XML and service-error bodies have separate byte limits.
+- `list_objects_v2_all` and multipart listing require caller-selected page bounds.
+- DTD and entity declarations are rejected before XML deserialization.
+- Header values, timestamps, integers, ranges, part numbers, checksums, ETags, pagination tokens, and upload IDs are validated before use.
+- Download streams reject bodies that exceed or end before the declared content length.
+- A returned full-object SHA-256 checksum is verified at EOF.
+- Malformed remote input becomes a structured error rather than a panic.
+
+The crate forbids unsafe code.
 
 ## Resource and availability controls
 
-Configuration separately bounds connection, request-attempt, overall-operation, and idle-response-body time. Retry attempts, elapsed retry time, backoff, and `Retry-After` handling are bounded. Multipart part size, concurrency, and total in-flight bytes are validated before use. File-backed replay creates a disk snapshot, so operators must also place a quota and suitable permissions on the process temporary directory.
+Configuration separately bounds:
 
-Managed multipart cancellation retains cleanup ownership after the caller drops the operation. Network partitions, process termination, or lost credentials can still prevent abort. Operators using multipart uploads should run bounded stale-upload reclamation with a conservative age cutoff.
+- connection timeout;
+- request-attempt timeout;
+- overall-operation timeout;
+- idle-response-body timeout;
+- retry attempts and elapsed retry time;
+- backoff and accepted `Retry-After` delay;
+- XML and error response bytes;
+- list pages;
+- multipart part size and concurrency; and
+- multipart bytes in flight.
 
-## Integrity scope
+File-backed replay creates a disk snapshot. Operators must provide enough temporary space and protect it with suitable permissions and quotas.
 
-Every signed payload has a SHA-256 payload hash. Replayable bodies are hashed by the client; one-shot bodies require a caller-supplied length and digest and are checked as they are transmitted. PutObject automatic additional checksum headers currently support SHA-256. Returned checksum headers are syntax-validated and exposed; only a full-object SHA-256 download checksum is recalculated by the response stream. Range responses are not compared with a full-object checksum.
+Managed multipart retains cleanup ownership after the public future is dropped. Abort can still fail during process termination, network partitions, or credential loss. Deployments using multipart should run bounded stale-upload cleanup with a conservative age cutoff.
 
-SigV4 authenticates the request to the endpoint but does not make an unencrypted HTTP endpoint confidential. ETags are protocol metadata and are not treated as content hashes.
+## Integrity guarantees
 
-## Residual risks and operator responsibilities
+Every signed payload uses a SHA-256 SigV4 payload hash:
 
-- Protect environment variables, process memory, core dumps, temporary files, and explicitly exposed presigned URLs.
-- Use least-privilege, short-lived credentials and bucket policies that constrain allowed prefixes and operations.
-- Validate custom endpoint ownership and DNS before providing credentials.
-- Apply an application-level digest or authenticated format when object content integrity must survive storage-side changes or when the service does not return a supported checksum.
-- Serialize writers or use manifest-last publication when immutable names are uploaded through managed multipart, because that API has no destination precondition.
-- Consume download streams to EOF before treating checksum verification as successful.
+- replayable bytes and file snapshots are hashed by the client;
+- one-shot streams require a caller-supplied length and digest and are checked as transmitted;
+- PutObject can add an S3 SHA-256 checksum;
+- returned checksum headers are syntax-validated; and
+- a returned full-object SHA-256 checksum is recalculated during streaming download.
+
+Other returned checksum algorithms are exposed but not recalculated. Range responses are not compared with full-object checksums. ETags are protocol metadata and are not treated as content hashes.
+
+SigV4 authenticates a request to the endpoint; it does not make a plain HTTP connection confidential.
+
+## Operator checklist
+
+- Use HTTPS for every remote endpoint.
+- Prefer short-lived, least-privilege credentials and prefix-restricted bucket policies.
+- Protect environment variables, process memory, core dumps, and temporary files.
+- Never log authorization headers, upload IDs, or exposed presigned URLs.
+- Consume downloads to EOF before accepting length or checksum verification.
+- Add an application digest or authenticated format when storage-side integrity matters.
+- Serialize immutable multipart writers or publish a conditional manifest last.
+- Reclaim stale multipart uploads with bounded listing and a safe age cutoff.
+
+Report suspected vulnerabilities through the process in [`SECURITY.md`](../SECURITY.md).
