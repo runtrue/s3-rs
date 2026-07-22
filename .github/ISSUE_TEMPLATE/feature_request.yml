@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a bounded S3 data-plane capability or developer-experience improvement.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: Describe the application need and why existing APIs cannot address it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include the S3 operation, expected API shape, and compatibility expectations.
+    validations:
+      required: true
+  - type: textarea
+    id: bounds
+    attributes:
+      label: Resource and security bounds
+      description: Explain memory, disk, concurrency, timeout, retry/replay, credential, and redaction implications.
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Suggested feature tier
+      options:
+        - Core data plane
+        - Optional production integration
+        - Ecosystem adapter
+        - Test or development tooling
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true

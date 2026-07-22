@@ -1,6 +1,27 @@
 name: AWS compatibility
 
 on:
+  schedule:
+    # Exercise the same OIDC path used by release tags every day. Scheduled
+    # workflows run from the default branch.
+    - cron: "17 04 * * *"
+  workflow_call:
+    inputs:
+      aws_region:
+        description: AWS region containing the compatibility bucket
+        required: false
+        default: us-east-1
+        type: string
+      addressing_style:
+        description: S3 addressing style
+        required: false
+        default: virtual
+        type: string
+      git_ref:
+        description: Exact commit or tag to test
+        required: false
+        default: ""
+        type: string
   workflow_dispatch:
     inputs:
       aws_region:
@@ -16,13 +37,18 @@ on:
         options:
           - virtual
           - path
+      git_ref:
+        description: Exact commit or tag to test; defaults to the dispatched ref
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: aws-compat-${{ github.ref }}
+  group: aws-compat-${{ inputs.git_ref || github.sha }}
   cancel-in-progress: false
 
 env:
@@ -33,12 +59,15 @@ env:
 jobs:
   aws-compat:
     name: AWS S3 compatibility
+    if: github.event_name != 'schedule' || vars.AWS_CONFORMANCE_REQUIRED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: aws-compat
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.git_ref || github.sha }}
       - name: Install Rust
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
@@ -60,13 +89,13 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           role-session-name: s3-wire-${{ github.run_id }}
-          aws-region: ${{ inputs.aws_region }}
+          aws-region: ${{ inputs.aws_region || vars.AWS_COMPAT_REGION || 'us-east-1' }}
           role-duration-seconds: 3600
           mask-aws-account-id: true
       - name: Run AWS compatibility suite
         env:
-          AWS_REGION: ${{ inputs.aws_region }}
-          S3_WIRE_AWS_ADDRESSING_STYLE: ${{ inputs.addressing_style }}
+          AWS_REGION: ${{ inputs.aws_region || vars.AWS_COMPAT_REGION || 'us-east-1' }}
+          S3_WIRE_AWS_ADDRESSING_STYLE: ${{ inputs.addressing_style || 'virtual' }}
           S3_WIRE_AWS_BUCKET: ${{ secrets.S3_WIRE_AWS_BUCKET }}
         run: |
           set +e
@@ -74,12 +103,16 @@ jobs:
           status=$?
           set -e
           mkdir -p "$RUNNER_TEMP/aws-compat"
+          tested_commit=$(git rev-parse HEAD)
           if [ "$status" -eq 0 ]; then result=passed; else result=failed; fi
           printf '{"schema_version":1,"result":"%s","run_id":"%s","commit":"%s"}\n' \
-            "$result" "$GITHUB_RUN_ID" "$GITHUB_SHA" > "$RUNNER_TEMP/aws-compat/result.json"
+            "$result" "$GITHUB_RUN_ID" "$tested_commit" > "$RUNNER_TEMP/aws-compat/result.json"
           printf '# AWS compatibility\n\n- Result: %s\n- Run: %s\n- Commit: %s\n' \
-            "$result" "$GITHUB_RUN_ID" "$GITHUB_SHA" > "$RUNNER_TEMP/aws-compat/result.md"
+            "$result" "$GITHUB_RUN_ID" "$tested_commit" > "$RUNNER_TEMP/aws-compat/result.md"
           exit "$status"
+      - name: Add compatibility result to summary
+        if: always()
+        run: test ! -f "$RUNNER_TEMP/aws-compat/result.md" || cat "$RUNNER_TEMP/aws-compat/result.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload redacted compatibility result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

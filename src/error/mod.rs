@@ -69,6 +69,24 @@ pub enum TimeoutPhase {
     Operation,
 }
 
+/// Why a retryable request stopped without another attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RetryStopReason {
+    /// The final error is not retryable.
+    NonRetryable,
+    /// The request body or operation cannot be safely replayed.
+    NonReplayable,
+    /// The configured attempt limit was reached.
+    AttemptsExhausted,
+    /// The configured retry elapsed-time limit was reached.
+    ElapsedLimit,
+    /// The operation deadline cannot accommodate another retry.
+    Deadline,
+    /// The client-wide retry quota was depleted.
+    RetryQuota,
+}
+
 #[derive(Debug)]
 struct RedactedSource {
     error_type: &'static str,
@@ -108,6 +126,8 @@ struct S3ErrorDetails {
     clock_skew: Option<time::Duration>,
     source: Option<RedactedSource>,
     cleanup_failure: Option<S3Error>,
+    attempts: u32,
+    retry_stop_reason: Option<RetryStopReason>,
 }
 
 impl S3Error {
@@ -131,6 +151,8 @@ impl S3Error {
                 clock_skew: None,
                 source: None,
                 cleanup_failure: None,
+                attempts: 0,
+                retry_stop_reason: None,
             }),
         }
     }
@@ -301,6 +323,22 @@ impl S3Error {
     pub fn cleanup_failure(&self) -> Option<&Self> {
         self.details.cleanup_failure.as_ref()
     }
+
+    /// Returns the number of completed request attempts represented by this error.
+    pub fn attempts(&self) -> u32 {
+        self.details.attempts
+    }
+
+    /// Returns why the client did not make another retry attempt.
+    pub fn retry_stop_reason(&self) -> Option<RetryStopReason> {
+        self.details.retry_stop_reason
+    }
+
+    pub(crate) fn with_retry_context(mut self, attempts: u32, reason: RetryStopReason) -> Self {
+        self.details.attempts = attempts;
+        self.details.retry_stop_reason = Some(reason);
+        self
+    }
 }
 
 impl fmt::Display for S3Error {
@@ -328,6 +366,8 @@ impl fmt::Debug for S3Error {
             .field("request_id", &self.details.request_id)
             .field("host_id", &self.details.host_id)
             .field("retry", &self.details.retry)
+            .field("attempts", &self.details.attempts)
+            .field("retry_stop_reason", &self.details.retry_stop_reason)
             .field("timeout_phase", &self.details.timeout_phase)
             .field("server_time", &self.details.server_time)
             .field("clock_skew", &self.details.clock_skew)

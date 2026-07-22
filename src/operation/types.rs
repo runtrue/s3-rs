@@ -181,6 +181,37 @@ pub enum ChecksumAlgorithm {
     Sha256,
 }
 
+/// How S3 derives an object checksum from multipart data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ChecksumType {
+    /// S3 combines independently calculated part checksums.
+    Composite,
+    /// The checksum covers the complete object byte sequence.
+    FullObject,
+    /// A newer aggregation mode returned by the service.
+    Unknown(String),
+}
+
+impl ChecksumType {
+    /// Returns the value used by S3 headers and XML responses.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Composite => "COMPOSITE",
+            Self::FullObject => "FULL_OBJECT",
+            Self::Unknown(value) => value,
+        }
+    }
+
+    pub(crate) fn parse(value: String) -> Self {
+        match value.as_str() {
+            "COMPOSITE" => Self::Composite,
+            "FULL_OBJECT" => Self::FullObject,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
 /// Base64-encoded checksums returned by S3.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Checksum {

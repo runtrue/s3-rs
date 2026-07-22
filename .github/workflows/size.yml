@@ -1,0 +1,72 @@
+name: Release size
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - src/**
+      - comparisons/size/**
+      - .github/workflows/size.yml
+  schedule:
+    - cron: "11 03 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-size-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  COMPARISON_JOBS: "1"
+  RUST_VERSION: 1.97.1
+
+jobs:
+  size:
+    name: Clean release-build comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+      - name: Cache immutable Cargo downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: release-size-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('comparisons/size/**/Cargo.lock') }}
+          restore-keys: |
+            release-size-${{ runner.os }}-${{ env.RUST_VERSION }}-
+      - name: Preserve committed baseline
+        run: cp comparisons/size/results.json "$RUNNER_TEMP/size-baseline.json"
+      - name: Measure clean release builds
+        env:
+          REQUIRE_CLEAN_SOURCE: "1"
+        run: ./comparisons/size/measure.sh
+      - name: Enforce size and dependency envelopes
+        run: |
+          ./comparisons/size/check-regression.sh \
+            "$RUNNER_TEMP/size-baseline.json" comparisons/size/results.json \
+            | tee "$RUNNER_TEMP/size-regression.md"
+          cat "$RUNNER_TEMP/size-regression.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload comparison report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-size-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            comparisons/size/REPORT.md
+            comparisons/size/results.json
+            ${{ runner.temp }}/size-baseline.json
+            ${{ runner.temp }}/size-regression.md
+          if-no-files-found: warn
+          retention-days: 30

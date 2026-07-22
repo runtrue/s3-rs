@@ -10,6 +10,7 @@ result_file="$script_dir/results.json"
 report_file="$script_dir/REPORT.md"
 target_triple=$(rustc -vV | sed -n 's/^host: //p')
 jobs=${COMPARISON_JOBS:-1}
+require_clean_source=${REQUIRE_CLEAN_SOURCE:-0}
 
 export CARGO_INCREMENTAL=1
 export CARGO_TERM_COLOR=never
@@ -96,6 +97,10 @@ if test -n "$(git -C "$repository_dir" status --porcelain --untracked-files=all 
     source_dirty=true
 else
     source_dirty=false
+fi
+if test "$require_clean_source" = 1 && test "$source_dirty" = true; then
+    echo "refusing to benchmark a dirty Cargo.toml or src tree" >&2
+    exit 1
 fi
 source_sha256=$(
     cd "$repository_dir"

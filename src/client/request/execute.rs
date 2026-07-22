@@ -6,17 +6,40 @@ use hyper::body::Incoming;
 use tokio::time::Instant;
 
 use super::super::S3Client;
-use super::response::operation_timeout;
+use super::response::{operation_timeout, protocol_error, service_error};
 use super::retry::{controlled_region_redirect, parse_retry_after};
 use super::signing::SignedRequestInput;
 use crate::endpoint::EndpointUrl;
-use crate::error::{S3Error, TimeoutPhase};
+use crate::error::{RetryStopReason, S3Error, TimeoutPhase};
+use crate::observer::{RequestEvent, RequestEventKind};
+use crate::protocol::{ParsedS3Error, ProtocolError};
 use crate::signing::{QueryParam, canonical_query, payload_sha256_hex};
 use crate::stream::{ByteStream, PreparedBody};
 
 #[derive(Clone, Copy)]
 pub(in crate::client) struct OperationDeadline {
     at: Instant,
+}
+
+pub(in crate::client) struct CollectedSignedResponse {
+    pub(in crate::client) headers: HeaderMap,
+    pub(in crate::client) body: Vec<u8>,
+}
+
+type EmbeddedErrorParser = fn(&[u8], usize) -> Result<Option<ParsedS3Error>, ProtocolError>;
+
+#[derive(Clone, Copy)]
+enum SuccessMode {
+    Streaming,
+    CollectedXml {
+        maximum: usize,
+        embedded_error: EmbeddedErrorParser,
+    },
+}
+
+enum SuccessfulResponse {
+    Streaming(Response<Incoming>),
+    Collected(CollectedSignedResponse),
 }
 
 impl OperationDeadline {
@@ -66,6 +89,70 @@ impl S3Client {
         body: Option<&PreparedBody>,
         deadline: &OperationDeadline,
     ) -> Result<Response<Incoming>, S3Error> {
+        match self
+            .send_signed_inner(
+                method,
+                target,
+                query,
+                headers,
+                body,
+                deadline,
+                SuccessMode::Streaming,
+            )
+            .await?
+        {
+            SuccessfulResponse::Streaming(response) => Ok(response),
+            SuccessfulResponse::Collected(_) => {
+                unreachable!("streaming success mode returned a collected response")
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::client) async fn send_signed_collected_xml(
+        &self,
+        method: Method,
+        target: EndpointUrl,
+        query: &[(String, String)],
+        headers: HeaderMap,
+        body: Option<&PreparedBody>,
+        deadline: &OperationDeadline,
+        maximum: usize,
+        embedded_error: EmbeddedErrorParser,
+    ) -> Result<CollectedSignedResponse, S3Error> {
+        match self
+            .send_signed_inner(
+                method,
+                target,
+                query,
+                headers,
+                body,
+                deadline,
+                SuccessMode::CollectedXml {
+                    maximum,
+                    embedded_error,
+                },
+            )
+            .await?
+        {
+            SuccessfulResponse::Collected(response) => Ok(response),
+            SuccessfulResponse::Streaming(_) => {
+                unreachable!("collected success mode returned a streaming response")
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_signed_inner(
+        &self,
+        method: Method,
+        target: EndpointUrl,
+        query: &[(String, String)],
+        headers: HeaderMap,
+        body: Option<&PreparedBody>,
+        deadline: &OperationDeadline,
+        success_mode: SuccessMode,
+    ) -> Result<SuccessfulResponse, S3Error> {
         let query_refs = query
             .iter()
             .map(|(name, value)| QueryParam::new(name, value))
@@ -78,6 +165,8 @@ impl S3Client {
         let payload_hash = body.map_or_else(|| payload_sha256_hex(&[]), PreparedBody::sha256_hex);
         let started = Instant::now();
         let mut attempts_completed = 0_u32;
+        let mut last_retry_cost = None;
+        let mut pending_retry_permit: Option<super::super::RetryPermit> = None;
 
         loop {
             deadline.remaining()?;
@@ -96,12 +185,78 @@ impl S3Client {
             .await
             .map_err(|_| operation_timeout())??;
             let remaining = deadline.remaining()?;
+            if let Some(permit) = pending_retry_permit.take() {
+                last_retry_cost = Some(permit.commit());
+            }
+            self.observe(RequestEvent {
+                kind: RequestEventKind::AttemptStarted,
+                method: method.as_str(),
+                attempt: attempts_completed.saturating_add(1),
+                error_category: None,
+                retry_classification: None,
+                retry_delay: None,
+            });
             attempts_completed = attempts_completed.saturating_add(1);
             let attempt_timeout = min(self.inner.config.attempt_timeout(), remaining);
             let result = self.inner.transport.send(request, attempt_timeout).await;
 
             let (error, retry_after) = match result {
-                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) if response.status().is_success() => match success_mode {
+                    SuccessMode::Streaming => {
+                        self.inner
+                            .retry_quota
+                            .replenish_after_success(last_retry_cost);
+                        self.observe(RequestEvent {
+                            kind: RequestEventKind::AttemptSucceeded,
+                            method: method.as_str(),
+                            attempt: attempts_completed,
+                            error_category: None,
+                            retry_classification: None,
+                            retry_delay: None,
+                        });
+                        return Ok(SuccessfulResponse::Streaming(response));
+                    }
+                    SuccessMode::CollectedXml {
+                        maximum,
+                        embedded_error,
+                    } => {
+                        let response_headers = response.headers().clone();
+                        let retry_after = parse_retry_after(&response_headers);
+                        match self.collect_response(response, maximum, deadline).await {
+                            Err(error) => (error, retry_after),
+                            Ok(response_body) => match embedded_error(&response_body, maximum) {
+                                Err(error) => (protocol_error(error), retry_after),
+                                Ok(Some(parsed)) => (
+                                    service_error(
+                                        http::StatusCode::OK,
+                                        &response_headers,
+                                        Some(parsed),
+                                    ),
+                                    retry_after,
+                                ),
+                                Ok(None) => {
+                                    self.inner
+                                        .retry_quota
+                                        .replenish_after_success(last_retry_cost);
+                                    self.observe(RequestEvent {
+                                        kind: RequestEventKind::AttemptSucceeded,
+                                        method: method.as_str(),
+                                        attempt: attempts_completed,
+                                        error_category: None,
+                                        retry_classification: None,
+                                        retry_delay: None,
+                                    });
+                                    return Ok(SuccessfulResponse::Collected(
+                                        CollectedSignedResponse {
+                                            headers: response_headers,
+                                            body: response_body,
+                                        },
+                                    ));
+                                }
+                            },
+                        }
+                    }
+                },
                 Ok(response)
                     if !region_redirected
                         && controlled_region_redirect(response.status(), response.headers())
@@ -110,27 +265,37 @@ impl S3Client {
                     let region = controlled_region_redirect(response.status(), response.headers())
                         .expect("guard established a region redirect");
                     let policy = self.inner.config.retry_policy();
-                    if !self.uses_standard_aws_endpoint()
-                        || !replayable
-                        || attempts_completed >= policy.max_attempts()
-                        || started.elapsed() >= policy.max_elapsed()
-                    {
-                        let retry_after = parse_retry_after(response.headers());
-                        let error = self.response_error(response, deadline).await;
-                        (error, retry_after)
-                    } else {
-                        let authority = match self.inner.config.addressing_style() {
-                            crate::config::AddressingStyle::Path => {
-                                format!("s3.{region}.amazonaws.com")
-                            }
-                            crate::config::AddressingStyle::VirtualHosted => {
-                                format!("{}.s3.{region}.amazonaws.com", self.inner.config.bucket())
-                            }
-                        };
-                        target = target.with_authority(&authority)?;
-                        signing_region = region.to_owned();
-                        region_redirected = true;
-                        continue;
+                    let service_authority = self.redirected_aws_authority(region);
+                    match service_authority {
+                        Some(service_authority)
+                            if replayable
+                                && attempts_completed < policy.max_attempts()
+                                && started.elapsed() < policy.max_elapsed() =>
+                        {
+                            let authority = match self.inner.config.addressing_style() {
+                                crate::config::AddressingStyle::Path => service_authority,
+                                crate::config::AddressingStyle::VirtualHosted => {
+                                    format!("{}.{service_authority}", self.inner.config.bucket())
+                                }
+                            };
+                            target = target.with_authority(&authority)?;
+                            signing_region = region.to_owned();
+                            region_redirected = true;
+                            self.observe(RequestEvent {
+                                kind: RequestEventKind::RegionRedirected,
+                                method: method.as_str(),
+                                attempt: attempts_completed,
+                                error_category: None,
+                                retry_classification: Some(crate::RetryClassification::Retryable),
+                                retry_delay: Some(Duration::ZERO),
+                            });
+                            continue;
+                        }
+                        _ => {
+                            let retry_after = parse_retry_after(response.headers());
+                            let error = self.response_error(response, deadline).await;
+                            (error, retry_after)
+                        }
                     }
                 }
                 Ok(response) => {
@@ -143,17 +308,93 @@ impl S3Client {
 
             let elapsed = started.elapsed();
             let policy = self.inner.config.retry_policy();
-            if !replayable
-                || !policy.permits_retry(error.retry_classification(), attempts_completed, elapsed)
-            {
-                return Err(error);
-            }
-            let Some(delay) = policy.delay(attempts_completed, elapsed, retry_after) else {
-                return Err(error);
+            let classification = error.retry_classification();
+            let stop_reason = if !replayable {
+                Some(RetryStopReason::NonReplayable)
+            } else if classification == crate::RetryClassification::Never {
+                Some(RetryStopReason::NonRetryable)
+            } else if attempts_completed >= policy.max_attempts() {
+                Some(RetryStopReason::AttemptsExhausted)
+            } else if elapsed >= policy.max_elapsed() {
+                Some(RetryStopReason::ElapsedLimit)
+            } else {
+                None
             };
-            if delay >= deadline.remaining()? {
-                return Err(error);
+            if let Some(reason) = stop_reason {
+                self.observe(RequestEvent {
+                    kind: RequestEventKind::AttemptFailed,
+                    method: method.as_str(),
+                    attempt: attempts_completed,
+                    error_category: Some(error.category()),
+                    retry_classification: Some(classification),
+                    retry_delay: None,
+                });
+                return Err(error.with_retry_context(attempts_completed, reason));
             }
+            let Some(delay) =
+                policy.delay_for(classification, attempts_completed, elapsed, retry_after)
+            else {
+                self.observe(RequestEvent {
+                    kind: RequestEventKind::AttemptFailed,
+                    method: method.as_str(),
+                    attempt: attempts_completed,
+                    error_category: Some(error.category()),
+                    retry_classification: Some(classification),
+                    retry_delay: None,
+                });
+                return Err(
+                    error.with_retry_context(attempts_completed, RetryStopReason::ElapsedLimit)
+                );
+            };
+            let remaining = match deadline.remaining() {
+                Ok(remaining) => remaining,
+                Err(_) => {
+                    self.observe(RequestEvent {
+                        kind: RequestEventKind::AttemptFailed,
+                        method: method.as_str(),
+                        attempt: attempts_completed,
+                        error_category: Some(error.category()),
+                        retry_classification: Some(classification),
+                        retry_delay: None,
+                    });
+                    return Err(
+                        error.with_retry_context(attempts_completed, RetryStopReason::Deadline)
+                    );
+                }
+            };
+            if delay >= remaining {
+                self.observe(RequestEvent {
+                    kind: RequestEventKind::AttemptFailed,
+                    method: method.as_str(),
+                    attempt: attempts_completed,
+                    error_category: Some(error.category()),
+                    retry_classification: Some(classification),
+                    retry_delay: None,
+                });
+                return Err(error.with_retry_context(attempts_completed, RetryStopReason::Deadline));
+            }
+            let Some(retry_permit) = self.inner.retry_quota.acquire(classification) else {
+                self.observe(RequestEvent {
+                    kind: RequestEventKind::AttemptFailed,
+                    method: method.as_str(),
+                    attempt: attempts_completed,
+                    error_category: Some(error.category()),
+                    retry_classification: Some(classification),
+                    retry_delay: None,
+                });
+                return Err(
+                    error.with_retry_context(attempts_completed, RetryStopReason::RetryQuota)
+                );
+            };
+            pending_retry_permit = Some(retry_permit);
+            self.observe(RequestEvent {
+                kind: RequestEventKind::RetryScheduled,
+                method: method.as_str(),
+                attempt: attempts_completed,
+                error_category: Some(error.category()),
+                retry_classification: Some(classification),
+                retry_delay: Some(delay),
+            });
             tokio::time::sleep(delay).await;
         }
     }

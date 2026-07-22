@@ -19,6 +19,20 @@ pub enum AddressingStyle {
     VirtualHosted,
 }
 
+/// Standard AWS S3 endpoint variant.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AwsEndpointVariant {
+    /// Regional IPv4 endpoint.
+    #[default]
+    Standard,
+    /// Regional dual-stack IPv4/IPv6 endpoint.
+    DualStack,
+    /// Regional FIPS endpoint.
+    Fips,
+    /// Regional FIPS endpoint with dual-stack support.
+    FipsDualStack,
+}
+
 /// An absolute endpoint URL whose path retains its exact wire representation.
 ///
 /// Unlike a general-purpose browser URL, this value does not resolve dot segments
@@ -191,8 +205,38 @@ impl Endpoint {
     /// Returns an error when `region` cannot be represented safely in an AWS
     /// regional hostname.
     pub fn for_aws_region(region: &str) -> Result<Self, S3Error> {
+        Self::for_aws_region_variant(region, AwsEndpointVariant::Standard)
+    }
+
+    /// Creates a partition-aware regional AWS S3 endpoint variant.
+    ///
+    /// China regions use the `amazonaws.com.cn` DNS suffix. Commercial and
+    /// GovCloud regions use `amazonaws.com`. The region is still used as the
+    /// SigV4 signing region by [`crate::S3Config`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `region` cannot be represented safely in an AWS
+    /// regional hostname.
+    pub fn for_aws_region_variant(
+        region: &str,
+        variant: AwsEndpointVariant,
+    ) -> Result<Self, S3Error> {
         validate_region(region)?;
-        Self::new(format!("https://s3.{region}.amazonaws.com"))
+        let suffix = if region.starts_with("cn-") {
+            "amazonaws.com.cn"
+        } else {
+            "amazonaws.com"
+        };
+        let service = match variant {
+            AwsEndpointVariant::Standard | AwsEndpointVariant::DualStack => "s3",
+            AwsEndpointVariant::Fips | AwsEndpointVariant::FipsDualStack => "s3-fips",
+        };
+        let dualstack = match variant {
+            AwsEndpointVariant::DualStack | AwsEndpointVariant::FipsDualStack => ".dualstack",
+            AwsEndpointVariant::Standard | AwsEndpointVariant::Fips => "",
+        };
+        Self::new(format!("https://{service}{dualstack}.{region}.{suffix}"))
     }
 
     /// Returns the validated endpoint as an absolute URL string.
@@ -387,6 +431,26 @@ mod tests {
         assert_eq!(
             hosted.as_str(),
             "https://my-bucket.storage.example.test/api/folder/a%20b"
+        );
+    }
+
+    #[test]
+    fn constructs_partition_and_variant_aware_aws_endpoints() {
+        assert_eq!(
+            Endpoint::for_aws_region("us-west-2").unwrap().as_str(),
+            "https://s3.us-west-2.amazonaws.com/"
+        );
+        assert_eq!(
+            Endpoint::for_aws_region_variant("cn-north-1", AwsEndpointVariant::DualStack)
+                .unwrap()
+                .as_str(),
+            "https://s3.dualstack.cn-north-1.amazonaws.com.cn/"
+        );
+        assert_eq!(
+            Endpoint::for_aws_region_variant("us-gov-west-1", AwsEndpointVariant::FipsDualStack)
+                .unwrap()
+                .as_str(),
+            "https://s3-fips.dualstack.us-gov-west-1.amazonaws.com/"
         );
     }
 

@@ -1,0 +1,64 @@
+name: Bug report
+description: Report reproducible incorrect client behavior.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, authorization headers, signed URLs, private bucket names, or object data.
+  - type: input
+    id: version
+    attributes:
+      label: s3-wire version
+      placeholder: 0.1.1 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: service
+    attributes:
+      label: Service
+      options:
+        - AWS S3
+        - MinIO
+        - RustFS
+        - SeaweedFS
+        - Another S3-compatible service
+        - Deterministic/mock test
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic credentials and object names. Include relevant feature flags and endpoint/addressing configuration.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include the sanitized error category, HTTP status, service error code, and request ID when available.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Rust version, target, runtime, region, service version, and network/proxy details relevant to the failure.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive-data check
+      options:
+        - label: I removed credentials, signed URL query strings, private names, and object contents.
+          required: true

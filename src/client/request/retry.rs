@@ -6,21 +6,61 @@ use http::{HeaderMap, StatusCode};
 use super::super::S3Client;
 
 impl S3Client {
-    pub(super) fn uses_standard_aws_endpoint(&self) -> bool {
+    pub(super) fn redirected_aws_authority(&self, region: &str) -> Option<String> {
         let endpoint = self.inner.config.endpoint().url();
         if endpoint.scheme() != "https" {
-            return false;
+            return None;
         }
         let authority = endpoint.authority();
         let host = authority
             .split_once(':')
             .map_or(authority, |(host, _)| host);
-        host == "s3.amazonaws.com" || (host.starts_with("s3.") && host.ends_with(".amazonaws.com"))
+        let (name, suffix) = if let Some(name) = host.strip_suffix(".amazonaws.com.cn") {
+            (name, "amazonaws.com.cn")
+        } else {
+            let name = host.strip_suffix(".amazonaws.com")?;
+            (name, "amazonaws.com")
+        };
+        let prefix = if name == "s3" || is_regional_name(name, "s3") {
+            "s3"
+        } else if is_regional_name(name, "s3.dualstack") {
+            "s3.dualstack"
+        } else if is_regional_name(name, "s3-fips") {
+            "s3-fips"
+        } else if is_regional_name(name, "s3-fips.dualstack") {
+            "s3-fips.dualstack"
+        } else {
+            return None;
+        };
+        Some(format!("{prefix}.{region}.{suffix}"))
     }
 }
 
+fn is_regional_name(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|region| {
+            !region.is_empty()
+                && region.len() <= 64
+                && region
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
 pub(super) fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
-    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
+    headers
+        .get(RETRY_AFTER)
+        .and_then(parse_retry_after_value)
+        .or_else(|| {
+            headers
+                .get("x-amz-retry-after")
+                .and_then(parse_retry_after_value)
+        })
+}
+
+fn parse_retry_after_value(value: &http::HeaderValue) -> Option<Duration> {
+    let value = value.to_str().ok()?;
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
@@ -72,6 +112,16 @@ mod tests {
     }
 
     #[test]
+    fn accepts_amazon_retry_after_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-amz-retry-after"),
+            HeaderValue::from_static("7"),
+        );
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(7)));
+    }
+
+    #[test]
     fn region_redirects_require_a_valid_aws_region_header() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -90,5 +140,15 @@ mod tests {
             controlled_region_redirect(StatusCode::MOVED_PERMANENTLY, &headers),
             None
         );
+    }
+
+    #[test]
+    fn recognizes_regional_endpoint_shapes() {
+        assert!(is_regional_name("s3.us-west-2", "s3"));
+        assert!(is_regional_name(
+            "s3-fips.dualstack.us-gov-west-1",
+            "s3-fips.dualstack"
+        ));
+        assert!(!is_regional_name("s3.attacker.example", "s3"));
     }
 }

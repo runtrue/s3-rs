@@ -9,6 +9,7 @@ use http::HeaderValue;
 use crate::credentials::{CredentialsProvider, EnvironmentCredentialsProvider};
 use crate::endpoint::Endpoint;
 use crate::error::S3Error;
+use crate::observer::RequestObserver;
 use crate::retry::RetryPolicy;
 
 pub use crate::endpoint::AddressingStyle;
@@ -29,6 +30,7 @@ pub struct S3Config {
     retry_policy: RetryPolicy,
     user_agent: String,
     credentials_provider: Arc<dyn CredentialsProvider>,
+    observer: Option<Arc<dyn RequestObserver>>,
 }
 
 impl S3Config {
@@ -101,6 +103,33 @@ impl S3Config {
     pub fn credentials_provider(&self) -> &Arc<dyn CredentialsProvider> {
         &self.credentials_provider
     }
+
+    /// Returns the optional sanitized request observer.
+    pub fn observer(&self) -> Option<&Arc<dyn RequestObserver>> {
+        self.observer.as_ref()
+    }
+
+    /// Clones this service configuration for another bucket.
+    ///
+    /// This is used by [`crate::S3Client::for_bucket`] to retain the same
+    /// connection pool and credential provider while validating the new bucket
+    /// for the configured addressing style.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bucket is empty or invalid for the configured
+    /// endpoint and addressing style.
+    pub fn for_bucket(&self, bucket: impl Into<String>) -> Result<Self, S3Error> {
+        let bucket = bucket.into();
+        if bucket.is_empty() {
+            return Err(S3Error::configuration("bucket must not be empty"));
+        }
+        self.endpoint
+            .object_url(&bucket, None, self.addressing_style)?;
+        let mut config = self.clone();
+        config.bucket = bucket;
+        Ok(config)
+    }
 }
 
 impl fmt::Debug for S3Config {
@@ -120,6 +149,7 @@ impl fmt::Debug for S3Config {
             .field("retry_policy", &self.retry_policy)
             .field("user_agent", &self.user_agent)
             .field("credentials_provider", &"[REDACTED]")
+            .field("observer", &self.observer.as_ref().map(|_| "configured"))
             .finish()
     }
 }
@@ -140,6 +170,7 @@ pub struct S3ConfigBuilder {
     retry_policy: RetryPolicy,
     user_agent: String,
     credentials_provider: Arc<dyn CredentialsProvider>,
+    observer: Option<Arc<dyn RequestObserver>>,
 }
 
 impl S3ConfigBuilder {
@@ -233,6 +264,12 @@ impl S3ConfigBuilder {
         self
     }
 
+    /// Installs a dependency-free observer for sanitized request lifecycle events.
+    pub fn observer(mut self, observer: Arc<dyn RequestObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     /// Validates and creates the configuration.
     pub fn build(self) -> Result<S3Config, S3Error> {
         let bucket = self
@@ -293,6 +330,7 @@ impl S3ConfigBuilder {
             retry_policy: self.retry_policy,
             user_agent: self.user_agent,
             credentials_provider: self.credentials_provider,
+            observer: self.observer,
         })
     }
 }
@@ -314,6 +352,7 @@ impl Default for S3ConfigBuilder {
             retry_policy: RetryPolicy::default(),
             user_agent: format!("s3-wire/{}", env!("CARGO_PKG_VERSION")),
             credentials_provider: Arc::new(EnvironmentCredentialsProvider::new()),
+            observer: None,
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::{fmt, num::NonZeroU16};
 
 use super::{MultipartError, UploadId};
-use crate::operation::{Checksum, ObjectKey, RequestIds};
+use crate::operation::{Checksum, Conditions, CopySource, ObjectKey, RequestIds};
 use crate::stream::ByteStream;
 
 /// A validated multipart part number in the range 1 through 10,000.
@@ -117,6 +117,108 @@ pub struct UploadPartOutput {
     pub checksum: Checksum,
     /// Service request identifiers.
     pub request_ids: RequestIds,
+}
+
+/// Inclusive source byte range for one server-side copied part.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CopyPartRange {
+    start: u64,
+    end: u64,
+}
+
+impl CopyPartRange {
+    /// Constructs an inclusive range, rejecting an end before its start.
+    pub fn new(start: u64, end: u64) -> Result<Self, crate::operation::RangeError> {
+        if end < start {
+            return Err(crate::operation::RangeError { start, end });
+        }
+        Ok(Self { start, end })
+    }
+
+    /// Returns the first copied byte offset.
+    pub const fn start(self) -> u64 {
+        self.start
+    }
+
+    /// Returns the final copied byte offset, inclusively.
+    pub const fn end(self) -> u64 {
+        self.end
+    }
+
+    pub(crate) fn header_value(self) -> String {
+        format!("bytes={}-{}", self.start, self.end)
+    }
+}
+
+/// Request to populate a multipart part from an existing S3 object.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UploadPartCopyRequest {
+    destination: ObjectKey,
+    upload_id: UploadId,
+    part_number: PartNumber,
+    /// Object copied into this part.
+    pub source: CopySource,
+    /// Optional inclusive range within the source object.
+    pub source_range: Option<CopyPartRange>,
+    /// Preconditions evaluated against the source object.
+    pub source_conditions: Conditions,
+}
+
+impl UploadPartCopyRequest {
+    /// Constructs a full-source copy request for one multipart part.
+    pub fn new(
+        destination: ObjectKey,
+        upload_id: UploadId,
+        part_number: PartNumber,
+        source: CopySource,
+    ) -> Self {
+        Self {
+            destination,
+            upload_id,
+            part_number,
+            source,
+            source_range: None,
+            source_conditions: Conditions::default(),
+        }
+    }
+
+    /// Returns the destination object key.
+    pub const fn destination(&self) -> &ObjectKey {
+        &self.destination
+    }
+
+    /// Returns the multipart upload identifier.
+    pub const fn upload_id(&self) -> &UploadId {
+        &self.upload_id
+    }
+
+    /// Returns the destination part number.
+    pub const fn part_number(&self) -> PartNumber {
+        self.part_number
+    }
+}
+
+/// Result of copying an existing object or range into one multipart part.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UploadPartCopyOutput {
+    /// Destination part number supplied by the caller.
+    pub part_number: PartNumber,
+    /// Entity tag required when completing the upload.
+    pub e_tag: String,
+    /// Modification time reported for the copied part.
+    pub last_modified: Option<time::OffsetDateTime>,
+    /// Checksums returned for the copied part.
+    pub checksum: Checksum,
+    /// Service request identifiers.
+    pub request_ids: RequestIds,
+}
+
+impl UploadPartCopyOutput {
+    /// Converts the successful result into a completion descriptor.
+    pub fn completed_part(&self) -> Result<CompletedPart, MultipartError> {
+        CompletedPart::new(self.part_number.get(), self.e_tag.clone())
+            .map(|part| part.with_checksum(self.checksum.clone()))
+    }
 }
 
 /// A validated completed-part descriptor.

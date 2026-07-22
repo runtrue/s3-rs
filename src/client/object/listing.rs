@@ -84,6 +84,7 @@ impl S3Client {
         let mut query = vec![
             ("list-type".to_owned(), "2".to_owned()),
             ("max-keys".to_owned(), request.max_keys.get().to_string()),
+            ("encoding-type".to_owned(), "url".to_owned()),
         ];
         push_optional_query(&mut query, "prefix", request.prefix.as_deref());
         push_optional_query(&mut query, "delimiter", request.delimiter.as_deref());

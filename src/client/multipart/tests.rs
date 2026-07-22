@@ -5,7 +5,7 @@ use crate::operation::{
 use crate::signing::{QueryParam, canonical_query};
 
 use super::headers::{checksum_headers, create_headers};
-use super::query::{list_query, upload_part_query, upload_query};
+use super::query::{list_parts_query, list_query, upload_part_query, upload_query};
 
 fn encoded(query: &[(String, String)]) -> String {
     canonical_query(
@@ -48,6 +48,20 @@ fn list_query_contains_paired_resume_markers_and_bounds() {
         ..ListMultipartUploadsRequest::default()
     };
     assert!(list_query(&invalid).is_err());
+}
+
+#[test]
+fn list_parts_query_contains_upload_and_bounded_marker() {
+    let mut request = crate::ListPartsRequest::new(
+        ObjectKey::new("key").unwrap(),
+        UploadId::new("opaque /+").unwrap(),
+    );
+    request.part_number_marker = crate::PartNumber::new(7);
+    request.max_parts = PageSize::new(23).unwrap();
+    assert_eq!(
+        encoded(&list_parts_query(&request)),
+        "max-parts=23&part-number-marker=7&uploadId=opaque%20%2F%2B"
+    );
 }
 
 #[test]

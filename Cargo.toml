@@ -1,6 +1,6 @@
 [package]
 name = "s3-wire"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.97.1"
 description = "An async, streaming S3-compatible client for Rust"
@@ -12,22 +12,26 @@ readme = "README.md"
 keywords = ["s3", "object-storage", "aws", "minio", "sigv4"]
 categories = ["api-bindings", "asynchronous", "network-programming"]
 include = [
-    "src/**",
-    "benches/**",
-    "comparisons/size/REPORT.md",
-    "comparisons/size/results.json",
-    "docs/**",
-    "examples/**",
-    "measurements/**",
-    "tests/**",
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "Cargo.toml",
-    "SECURITY.md",
-    "README.md",
-    "LICENSE",
-    "deny.toml",
-    "rust-toolchain.toml",
+    "/src/**",
+    "/benches/**",
+    "/comparisons/size/REPORT.md",
+    "/comparisons/size/results.json",
+    "/docs/**",
+    "/examples/**",
+    "/measurements/**",
+    "/tests/**",
+    "/adapters/object-store/README.md",
+    "/CHANGELOG.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/Cargo.toml",
+    "/SECURITY.md",
+    "/SUPPORT.md",
+    "/ROADMAP.md",
+    "/README.md",
+    "/LICENSE",
+    "/deny.toml",
+    "/rust-toolchain.toml",
 ]
 
 [features]
@@ -37,9 +41,15 @@ http2 = ["hyper/http2", "hyper-rustls/http2", "hyper-util/http2"]
 # Narrow, non-production entry points used by cargo-fuzz and benchmarks.
 fuzzing = []
 aws-compat = []
+# Opt-in bridge to AWS's standard profile, web-identity, ECS, and IMDS
+# credential and region provider chains. The default build remains independent
+# of the AWS SDK runtime.
+aws-credentials = ["dep:aws-config", "dep:aws-credential-types"]
 
 [dependencies]
 async-trait = "0.1.91"
+aws-config = { version = "1.10.0", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio"], optional = true }
+aws-credential-types = { version = "1.3.0", optional = true }
 base64 = "0.22.1"
 bytes = "1.12.1"
 fastrand = "2.5.0"

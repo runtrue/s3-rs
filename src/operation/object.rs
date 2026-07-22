@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, fmt, num::NonZeroU16};
 
-use super::{ByteRange, Checksum, ChecksumAlgorithm, Conditions, ObjectKey, RequestIds};
+use super::{
+    ByteRange, Checksum, ChecksumAlgorithm, ChecksumType, Conditions, ObjectKey, RequestIds,
+};
 use crate::stream::{ByteStream, ResponseStream};
 
 /// Metadata common to object retrieval and inspection responses.
@@ -284,6 +286,25 @@ pub struct CopySource {
     pub version_id: Option<String>,
 }
 
+/// Metadata behavior for a server-side copy.
+///
+/// S3's `REPLACE` directive replaces the complete metadata set. Keeping that
+/// choice explicit prevents changing one header from accidentally discarding
+/// all source user metadata.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum CopyMetadataDirective {
+    /// Copy the source object's media type and user metadata unchanged.
+    #[default]
+    Copy,
+    /// Replace the complete metadata set with the supplied values.
+    Replace {
+        /// Replacement media type. When omitted, S3 applies its default.
+        content_type: Option<String>,
+        /// Complete replacement set of caller-defined metadata.
+        user_metadata: BTreeMap<String, String>,
+    },
+}
+
 /// Request to copy an object within S3.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CopyObjectRequest {
@@ -293,10 +314,29 @@ pub struct CopyObjectRequest {
     pub destination: ObjectKey,
     /// Preconditions evaluated against the source object.
     pub source_conditions: Conditions,
-    /// Replacement media type. When absent, source metadata is retained.
-    pub content_type: Option<String>,
-    /// Replacement user metadata. `None` retains source metadata.
-    pub user_metadata: Option<BTreeMap<String, String>>,
+    /// Whether to copy or completely replace source metadata.
+    pub metadata: CopyMetadataDirective,
+}
+
+impl CopyObjectRequest {
+    /// Constructs an unconditional copy that preserves all source metadata.
+    pub fn new(source: CopySource, destination: ObjectKey) -> Self {
+        Self {
+            source,
+            destination,
+            source_conditions: Conditions::default(),
+            metadata: CopyMetadataDirective::Copy,
+        }
+    }
+}
+
+/// Owner information optionally returned for a listed object.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ObjectOwner {
+    /// Canonical account identifier.
+    pub id: Option<String>,
+    /// Legacy display name, when the service still supplies one.
+    pub display_name: Option<String>,
 }
 
 /// Result of a server-side copy.
@@ -372,6 +412,12 @@ pub struct ListedObject {
     pub size: u64,
     /// Storage class, when supplied.
     pub storage_class: Option<String>,
+    /// Owner information requested with `fetch_owner`.
+    pub owner: Option<ObjectOwner>,
+    /// Checksum algorithms associated with this object.
+    pub checksum_algorithms: Vec<String>,
+    /// Whether reported checksums represent the full object or a composite.
+    pub checksum_type: Option<ChecksumType>,
 }
 
 /// One parsed `ListObjectsV2` page.

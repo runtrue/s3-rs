@@ -1,0 +1,1 @@
+<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>a%2Fb%20c%25</Key><Size>0</Size></Contents></ListBucketResult>

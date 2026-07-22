@@ -1,0 +1,61 @@
+name: Provider compatibility report
+description: Report a sanitized pass, failure, or behavioral difference for an S3-compatible provider.
+title: "compat: provider/version - operation"
+labels:
+  - compatibility
+body:
+  - type: markdown
+    attributes:
+      value: Compatibility reports become evidence only when the provider version, client revision, configuration, and exact operations are recorded. Never include secrets or exposed presigned URLs.
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and exact version
+      placeholder: MinIO RELEASE.2025-09-07T16-13-09Z
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: s3-wire version or commit
+      placeholder: 0.1.1 or a full commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Pass
+        - Failure
+        - Partial or provider-specific behavior
+    validations:
+      required: true
+  - type: textarea
+    id: operations
+    attributes:
+      label: Operations exercised
+      description: List each operation and important variants such as ranges, conditions, checksums, multipart, or presigning.
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Sanitized configuration
+      description: Region, addressing style, TLS, endpoint base-path shape, enabled features, Rust version, and target. Do not include the endpoint hostname if private.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reproduction and evidence
+      description: Provide a minimal reproduction or the exact test command and sanitized error/status/request ID.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Sensitive-data check
+      options:
+        - label: I removed credentials, authorization material, signed URL queries, private names, and object contents.
+          required: true

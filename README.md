@@ -10,13 +10,14 @@ Async, streaming S3-compatible client for Rust with explicit bounds on memory, r
 
 - Tokio-native uploads and downloads with backpressure
 - Replay-aware retries for in-memory and file-backed request bodies
-- Managed multipart uploads with bounded concurrency and abort cleanup
-- SigV4 request signing and presigned GET and PUT URLs
+- Managed multipart uploads with bounded concurrency, per-part checksums, and abort cleanup
+- SigV4 request signing and presigned object and multipart operations
 - Typed object keys, ranges, conditions, checksums, and multipart state
 - HTTPS by default, secret-redacting types, and bounded XML parsing
 - Integration-tested against pinned MinIO, RustFS, and SeaweedFS releases
 
-`s3-wire` requires Rust 1.97.1 and does not depend on another S3 client.
+`s3-wire` requires Rust 1.97.1 and does not depend on another S3 client. Patch
+releases do not intentionally raise the MSRV; see the [support policy](SUPPORT.md).
 
 ## Install
 
@@ -27,6 +28,21 @@ cargo add tokio --features fs,macros,rt-multi-thread
 
 The default transport uses HTTP/1.1. Enable the `http2` crate feature when an
 endpoint and workload benefit from HTTP/2 negotiation.
+
+### Feature tiers
+
+| Tier | Features | Stability and footprint |
+| --- | --- | --- |
+| Core | default feature set | Production data-plane API; no optional feature is required for ordinary S3 operations |
+| Transport option | `http2` | Adds HTTP/2 negotiation without changing request semantics |
+| Credential bridge | `aws-credentials` | Adds the AWS profile, web-identity, ECS, IMDSv2, credential-process, assume-role, and region provider chains |
+| Verification only | `aws-compat`, `fuzzing` | Test and benchmark entry points; not application features or compatibility promises |
+
+The AWS credential bridge is opt-in because it materially increases build size
+and may contact configured workload metadata endpoints. Encryption and
+ecosystem integrations should remain optional or live in separately versioned
+companion crates so the core client does not silently acquire their dependency
+or resource costs. The observer API is dependency-free and remains in core.
 
 ## Quick start
 
@@ -112,7 +128,14 @@ fn configured_client() -> Result<S3Client, Box<dyn std::error::Error>> {
 }
 ```
 
-The default `EnvironmentCredentialsProvider` needs no explicit configuration. Use `StaticCredentialsProvider` for an injected immutable value, or implement the async `CredentialsProvider` trait for a workload-specific source. `CachedCredentialsProvider` coalesces concurrent refreshes and respects credential expiration.
+The default `EnvironmentCredentialsProvider` needs no explicit configuration.
+Use `StaticCredentialsProvider` for an injected immutable value, or implement
+the async `CredentialsProvider` trait for a workload-specific source.
+`CachedCredentialsProvider` coalesces concurrent refreshes and respects
+credential expiration. With the opt-in `aws-credentials` feature,
+`AwsDefaultCredentialsProvider` and the region resolver helpers bridge to AWS's
+standard renewable profile, web-identity, ECS, IMDSv2, credential-process, and
+assume-role chains without changing the default dependency graph.
 
 ## Upload sources
 
@@ -153,7 +176,11 @@ async fn upload_large_file(client: &S3Client) -> Result<(), Box<dyn std::error::
 }
 ```
 
-Multipart selection is intentional: `put_object` never switches modes automatically. Call `multipart_upload` when application policy says a source should use multipart. Primitive create, upload-part, complete, list, and abort operations are also available when the application must own multipart state.
+Multipart selection is intentional: `put_object` never switches modes
+automatically. Call `multipart_upload` when application policy says a source
+should use multipart. Primitive create, upload-part, upload-part-copy, complete,
+list-parts, list-uploads, and abort operations are also available when the
+application must own multipart state.
 
 Dropping a managed upload stops scheduling parts, gives transmitted requests a
 bounded opportunity to settle, and then attempts an abort after an upload ID
@@ -164,7 +191,9 @@ stale-upload cleanup.
 
 ## Listing and presigning
 
-`list_objects_v2_all` follows continuation tokens up to a caller-supplied page limit. `presigned_get` and `presigned_put` return a redacted `PresignedUrl`:
+`list_objects_v2_all` follows continuation tokens up to a caller-supplied page
+limit. Presigned GET, PUT, HEAD, DELETE, multipart-create, part-upload, and
+multipart-abort requests return a redacted `PresignedUrl`:
 
 ```rust,no_run
 use std::time::Duration;
@@ -211,7 +240,12 @@ fn report(error: &S3Error) {
 }
 ```
 
-Retries are applied inside the client only when the classification, attempt and elapsed-time limits, operation deadline, and body replayability all permit another attempt.
+Retries are applied inside the client only when the classification, shared
+retry quota, attempt and elapsed-time limits, operation deadline, and body
+replayability all permit another attempt. `attempts()` and
+`retry_stop_reason()` explain the final decision, while an optional sanitized
+observer can record attempt lifecycle events without keys, endpoints, headers,
+or signing material.
 
 ## Examples
 
@@ -233,11 +267,14 @@ The pinned MinIO, RustFS, and SeaweedFS suites run in CI. An opt-in AWS suite ex
 
 ## Scope and limits
 
-- The client is async-only and configured for one bucket at a time.
+- The client is async-only; `for_bucket` creates cheap bucket-scoped handles
+  that share one connection pool, credential provider, and retry quota.
 - AWS chunked SigV4 streaming is not implemented.
-- Automatic upload-checksum calculation currently supports SHA-256.
+- Automatic `PutObject` checksum calculation currently supports SHA-256;
+  managed multipart parts support CRC32, CRC32C, CRC64NVME, and SHA-256.
 - Managed multipart does not expose a destination `If-None-Match` condition.
-- Bucket administration, ACLs, policies, version listing, metadata-service credentials, and encryption configuration are outside the current API.
+- Bucket administration, ACLs, policies, version listing, and application-managed
+  encryption configuration are outside the current API.
 
 See the [security model](docs/security-model.md) for deployment responsibilities and [architecture](docs/architecture.md) for retry, transport, and ownership details.
 
@@ -254,8 +291,11 @@ See the [security model](docs/security-model.md) for deployment responsibilities
 | [sandboxd integration](docs/sandboxd-integration.md) | Content-addressed publication, reads, garbage collection, and cleanup |
 | [Examples](examples/README.md) | Runnable object, streaming, multipart, presigning, and integration flows |
 | [Releasing](docs/releasing.md) | Package validation, tagging, publication, and post-release checks |
+| [Support policy](SUPPORT.md) | Supported releases, MSRV, issue evidence, and project scope |
+| [Roadmap](ROADMAP.md) | Direction, production-readiness priorities, and core non-goals |
 
-Also see [the API example](examples/basic.rs), [security reporting](SECURITY.md), and [contributing](CONTRIBUTING.md).
+Also see [the API example](examples/basic.rs), [security reporting](SECURITY.md),
+[contributing](CONTRIBUTING.md), and the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Development
 

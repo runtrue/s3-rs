@@ -38,7 +38,7 @@ pub(in crate::client::object) fn insert_upload_checksum(
     }
 }
 
-pub(in crate::client::object) fn insert_conditions(
+pub(in crate::client) fn insert_conditions(
     headers: &mut HeaderMap,
     conditions: &Conditions,
     prefix: &str,
@@ -102,9 +102,7 @@ pub(in crate::client::object) fn push_optional_query(
     }
 }
 
-pub(in crate::client::object) fn copy_source_header(
-    source: &crate::operation::CopySource,
-) -> String {
+pub(in crate::client) fn copy_source_header(source: &crate::operation::CopySource) -> String {
     let mut output = String::from("/");
     percent_encode(source.bucket.as_bytes(), false, &mut output);
     output.push('/');

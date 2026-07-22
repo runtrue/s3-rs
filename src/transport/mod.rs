@@ -29,6 +29,12 @@ impl Transport {
         user_agent: &str,
         allow_http: bool,
     ) -> Result<Self, S3Error> {
+        // `aws-credentials` can bring AWS-LC into the same process while the
+        // lightweight transport deliberately uses rustls' ring provider. When
+        // no application-wide provider has been selected, make that choice
+        // explicit so enabling the optional bridge cannot make TLS setup panic.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let mut http = HttpConnector::new();
         http.enforce_http(false);
         http.set_connect_timeout(Some(connect_timeout));

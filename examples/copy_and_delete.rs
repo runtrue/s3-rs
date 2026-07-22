@@ -3,8 +3,8 @@
 use std::error::Error;
 
 use s3_wire::{
-    ByteStream, Conditions, CopyObjectRequest, CopySource, DeleteObjectRequest,
-    DeleteObjectsRequest, ObjectKey, PutObjectRequest,
+    ByteStream, CopyObjectRequest, CopySource, DeleteObjectRequest, DeleteObjectsRequest,
+    ObjectKey, PutObjectRequest,
 };
 
 mod common;
@@ -24,17 +24,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     client
-        .copy_object(CopyObjectRequest {
-            source: CopySource {
+        .copy_object(CopyObjectRequest::new(
+            CopySource {
                 bucket,
                 key: source.clone(),
                 version_id: None,
             },
-            destination: destination.clone(),
-            source_conditions: Conditions::default(),
-            content_type: None,
-            user_metadata: None,
-        })
+            destination.clone(),
+        ))
         .await?;
 
     let deleted = client

@@ -16,6 +16,13 @@ pub(super) fn create_headers(request: &CreateMultipartUploadRequest) -> Result<H
             HeaderValue::from_static(checksum_algorithm_name(algorithm)),
         );
     }
+    if let Some(checksum_type) = &request.checksum_type {
+        insert_header(
+            &mut headers,
+            HeaderName::from_static("x-amz-checksum-type"),
+            checksum_type.as_str(),
+        )?;
+    }
     for (name, value) in &request.user_metadata {
         if name.is_empty() {
             return Err(S3Error::configuration(

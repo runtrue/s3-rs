@@ -9,13 +9,19 @@ pub use completion::{
     MultipartError,
 };
 pub use identifier::{UploadId, UploadIdError};
-pub use listing::{ListMultipartUploadsOutput, ListMultipartUploadsRequest, MultipartUploadEntry};
+pub use listing::{
+    ListMultipartUploadsOutput, ListMultipartUploadsRequest, ListPartsOutput, ListPartsRequest,
+    ListedPart, MultipartUploadEntry,
+};
 pub(crate) use managed::MultipartUploadSource;
 pub use managed::{
     CreateMultipartUploadOutput, CreateMultipartUploadRequest, ManagedMultipartUploadRequest,
     MultipartOptions, MultipartUpload,
 };
-pub use part::{CompletedPart, PartNumber, UploadPartOutput, UploadPartRequest};
+pub use part::{
+    CompletedPart, CopyPartRange, PartNumber, UploadPartCopyOutput, UploadPartCopyRequest,
+    UploadPartOutput, UploadPartRequest,
+};
 
 #[cfg(test)]
 mod tests;

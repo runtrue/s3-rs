@@ -2,7 +2,8 @@
 //!
 //! `s3-wire` provides typed object operations, SigV4 signing, replay-aware
 //! retries, streaming downloads, and primitive or managed multipart uploads.
-//! A client is configured for one endpoint, region, and bucket.
+//! A client is configured for one endpoint, region, and bucket; cheap
+//! bucket-scoped handles can share its connection pool.
 //!
 //! # Quick start
 //!
@@ -51,8 +52,9 @@
 //! # Errors
 //!
 //! [`S3Error`] exposes a stable [`ErrorCategory`], service status and code,
-//! request identifiers, retry classification, timeout phase, and any multipart
-//! cleanup failure. Formatting remains redacted by default.
+//! request identifiers, retry classification, attempt count, retry stop reason,
+//! timeout phase, and any multipart cleanup failure. Formatting remains
+//! redacted by default.
 //!
 //! # More documentation
 //!
@@ -68,6 +70,7 @@ mod config;
 mod credentials;
 mod endpoint;
 mod error;
+mod observer;
 mod operation;
 mod retry;
 mod stream;
@@ -80,26 +83,33 @@ mod protocol;
 mod signing;
 mod transport;
 
-pub use client::S3Client;
+pub use client::{DownloadToPathOutput, S3Client};
 pub use config::{AddressingStyle, S3Config, S3ConfigBuilder};
+#[cfg(feature = "aws-credentials")]
+pub use credentials::{
+    AwsDefaultCredentialsProvider, resolve_aws_region_for_profile, resolve_default_aws_region,
+};
 pub use credentials::{
     CachedCredentialsProvider, Credentials, CredentialsProvider, EnvironmentCredentialsProvider,
     StaticCredentialsProvider,
 };
-pub use endpoint::Endpoint;
-pub use error::{ErrorCategory, RetryClassification, S3Error, TimeoutPhase};
+pub use endpoint::{AwsEndpointVariant, Endpoint};
+pub use error::{ErrorCategory, RetryClassification, RetryStopReason, S3Error, TimeoutPhase};
+pub use observer::{RequestEvent, RequestEventKind, RequestObserver};
 pub use operation::{
-    AbortMultipartUploadRequest, ByteRange, Checksum, ChecksumAlgorithm,
-    CompleteMultipartUploadOutput, CompleteMultipartUploadRequest, CompletedPart, Conditions,
-    CopyObjectOutput, CopyObjectRequest, CopySource, CreateMultipartUploadOutput,
-    CreateMultipartUploadRequest, DeleteError, DeleteObjectOutput, DeleteObjectRequest,
-    DeleteObjectsError, DeleteObjectsOutput, DeleteObjectsRequest, DeletedObject, GetObjectOutput,
-    GetObjectRequest, HeadObjectOutput, HeadObjectRequest, ListMultipartUploadsOutput,
-    ListMultipartUploadsRequest, ListObjectsV2Output, ListObjectsV2Request, ListedObject,
-    ManagedMultipartUploadRequest, MultipartError, MultipartOptions, MultipartUpload,
-    MultipartUploadEntry, ObjectKey, ObjectKeyError, ObjectMetadata, PageSize, PartNumber,
-    PresignedUrl, PutObjectOutput, PutObjectRequest, RangeError, RequestIds, UploadId,
-    UploadIdError, UploadPartOutput, UploadPartRequest,
+    AbortMultipartUploadRequest, ByteRange, Checksum, ChecksumAlgorithm, ChecksumCalculationError,
+    ChecksumType, CompleteMultipartUploadOutput, CompleteMultipartUploadRequest, CompletedPart,
+    Conditions, CopyMetadataDirective, CopyObjectOutput, CopyObjectRequest, CopyPartRange,
+    CopySource, CreateMultipartUploadOutput, CreateMultipartUploadRequest, DeleteError,
+    DeleteObjectOutput, DeleteObjectRequest, DeleteObjectsError, DeleteObjectsOutput,
+    DeleteObjectsRequest, DeletedObject, GetObjectOutput, GetObjectRequest, HeadObjectOutput,
+    HeadObjectRequest, ListMultipartUploadsOutput, ListMultipartUploadsRequest,
+    ListObjectsV2Output, ListObjectsV2Request, ListPartsOutput, ListPartsRequest, ListedObject,
+    ListedPart, ManagedMultipartUploadRequest, MultipartError, MultipartOptions, MultipartUpload,
+    MultipartUploadEntry, ObjectKey, ObjectKeyError, ObjectMetadata, ObjectOwner, PageSize,
+    PartNumber, PresignedUrl, PutObjectOutput, PutObjectRequest, RangeError, RequestIds, UploadId,
+    UploadIdError, UploadPartCopyOutput, UploadPartCopyRequest, UploadPartOutput,
+    UploadPartRequest,
 };
 pub use retry::RetryPolicy;
 pub use stream::{ByteStream, ResponseStream};

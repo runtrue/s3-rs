@@ -13,6 +13,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets
 cargo test --locked --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+cargo semver-checks check-release --all-features
 ```
 
 Before a release or packaging change, also run:
@@ -97,7 +98,8 @@ Use disposable credentials and a disposable bucket. Plain HTTP is appropriate on
 
 ## AWS compatibility
 
-The AWS suite is manual, ignored, and gated by the `aws-compat` feature:
+The AWS suite is ignored by ordinary Cargo tests and gated by the `aws-compat`
+feature:
 
 ```sh
 cargo test --features aws-compat --test aws_compat -- --ignored --nocapture
@@ -105,7 +107,19 @@ cargo test --features aws-compat --test aws_compat -- --ignored --nocapture
 
 It requires `S3_WIRE_AWS_BUCKET` and standard AWS credential variables. `AWS_REGION`, `AWS_ENDPOINT_URL`, and `S3_WIRE_AWS_ADDRESSING_STYLE` are optional; `tests/aws_compat.rs` defines their exact behavior.
 
-Run the suite only against a dedicated bucket or restricted test prefix with short-lived, least-privilege credentials. It creates a unique prefix and attempts cleanup after failures. Never copy credentials or presigned URLs into logs. This suite has not yet been executed for the current release.
+Run the suite only against a dedicated bucket or restricted test prefix with
+short-lived, least-privilege credentials. It creates a unique prefix and
+attempts cleanup after failures. Never copy credentials or presigned URLs into
+logs.
+
+When repository variable `AWS_CONFORMANCE_REQUIRED` is `true`, the AWS
+compatibility workflow runs daily on `main` and the release workflow calls it
+with the exact release tag. Both paths use GitHub OIDC and the protected
+`aws-compat` environment; no long-lived AWS access key is stored. With the gate
+enabled, a release cannot enter its publish job unless that exact tag's called
+compatibility job succeeds. When the variable is unset or not `true`, scheduled
+and release-gate jobs are skipped and the release must not claim AWS validation.
+Manual compatibility dispatch remains available. See [the release gate setup](releasing.md#repository-setup).
 
 ## Fuzzing
 
@@ -118,6 +132,10 @@ cargo fuzz run canonical_uri
 
 Targets cover canonical URI and query construction, header canonicalization, S3 error XML, listing XML, multipart XML, and endpoint construction. Use a bounded run time. Convert every minimized crash into a normal regression fixture before closing the defect.
 
+CI runs all targets nightly from checked-in seed corpora with bounded time,
+per-input timeout, and RSS. Evolved corpora and crash artifacts are retained for
+30 days; reviewed minimized inputs belong in `fuzz/corpus/<target>/`.
+
 ## Performance validation
 
 Run the Criterion suite with:
@@ -126,6 +144,10 @@ Run the Criterion suite with:
 cargo bench --features fuzzing --bench validation
 ```
 
-The transfer and RSS harness is documented in [`tools/perf/README.md`](../tools/perf/README.md). Performance workflows are manual because shared runners and local containers are sensitive to host load.
+The transfer and RSS harness is documented in [`tools/perf/README.md`](../tools/perf/README.md).
+Performance workflows run weekly and remain manually dispatchable. Release-size
+comparisons also run for relevant pull requests and reject a dirty source tree,
+binary growth above the documented envelope, or unexpected dependency growth.
+Shared-runner timings remain informational because host load is not stable.
 
 Every retained result should record the source revision, dirty state, toolchain, features, command, service image digest, and measurement caveats. See [performance and size](performance.md) for the current baselines and interpretation rules.

@@ -4,6 +4,46 @@ This project records user-visible changes in this file and follows semantic vers
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
+### Added
+
+- Atomic verified downloads to a destination path, shared-transport bucket
+  handles, sanitized request lifecycle observers, and public retry attempt and
+  stop-reason metadata.
+- Optional `aws-credentials` integration for the standard renewable AWS
+  credential and region chains while keeping the default dependency graph
+  independent of the AWS SDK runtime.
+- Partition-aware standard, dual-stack, FIPS, and FIPS dual-stack AWS endpoint
+  construction, plus presigning for HEAD, DELETE, and multipart operations.
+- Typed `ListParts` and `UploadPartCopy` APIs and local CRC32, CRC32C,
+  CRC64NVME, and SHA-256 checksum calculation for managed multipart parts.
+
+### Changed
+
+- Copy and multipart-completion operations now retry retryable S3 errors embedded
+  in HTTP 200 responses under the same replay, attempt, and operation bounds as
+  ordinary service failures.
+- Copy metadata behavior is explicit: callers either preserve all source
+  metadata or provide the complete replacement media type and user metadata.
+- Object listings request URL encoding, decode keys and common prefixes exactly
+  once, and expose owner and checksum metadata returned by S3.
+- Retry handling recognizes additional AWS transient and throttling errors,
+  applies throttling-specific backoff, honors both standard and Amazon retry
+  delay headers, and preserves AWS endpoint variants during region correction.
+- Multipart support now includes bounded `ListParts` and in-progress-upload
+  pagination, `UploadPartCopy`, typed checksum aggregation, and automatic
+  CRC32, CRC32C, CRC64NVME, or SHA-256 checksums for managed upload parts.
+
+### Migration
+
+- `CopyObjectRequest` now uses `CopyMetadataDirective` instead of independent
+  content-type and metadata fields. `CopyObjectRequest::new` preserves all
+  source metadata; select `Replace` only with the complete replacement set.
+- Listing and multipart response models expose new owner and checksum fields.
+  Code that constructs or exhaustively destructures those public models must
+  initialize or ignore the new fields.
+
 ## [0.1.1] - 2026-07-22
 
 ### Changed

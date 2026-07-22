@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::common::parse_upload_id;
-use crate::operation::{CreateMultipartUploadOutput, ObjectKey};
+use crate::operation::{ChecksumType, CreateMultipartUploadOutput, ObjectKey};
 use crate::protocol::ProtocolError;
 use crate::protocol::xml::{expect_root, parse_bounded};
 
@@ -16,6 +16,8 @@ struct CreateDocument {
     upload_id: String,
     #[serde(rename = "ChecksumAlgorithm")]
     checksum_algorithm: Option<String>,
+    #[serde(rename = "ChecksumType")]
+    checksum_type: Option<String>,
 }
 
 pub(crate) fn parse_create_multipart_upload(
@@ -29,10 +31,12 @@ pub(crate) fn parse_create_multipart_upload(
         field: "Key",
         reason: error.to_string(),
     })?;
+    let checksum_type = document.checksum_type.map(ChecksumType::parse);
     Ok(CreateMultipartUploadOutput::new(
         document.bucket,
         key,
         upload_id,
         document.checksum_algorithm,
+        checksum_type,
     ))
 }
