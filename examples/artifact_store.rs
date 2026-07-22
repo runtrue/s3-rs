@@ -16,8 +16,8 @@ use s3_wire::{
     AbortMultipartUploadRequest, AddressingStyle, ByteStream, Credentials, CredentialsProvider,
     DeleteObjectRequest, DeleteObjectsRequest, Endpoint, ErrorCategory, GetObjectRequest,
     HeadObjectRequest, ListMultipartUploadsRequest, ListObjectsV2Request,
-    ManagedMultipartUploadRequest, ObjectKey, ObjectKeyError, PutObjectRequest, S3Client, S3Config,
-    S3Error, StaticCredentialsProvider,
+    ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, ObjectKeyError, PutObjectRequest,
+    S3Client, S3Config, S3Error, StaticCredentialsProvider, TimeoutPhase,
 };
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
@@ -274,20 +274,26 @@ impl ArtifactStore {
             return Ok(());
         }
         let snapshot = snapshot_verified(path.as_ref(), digest).await?;
+        let options = MultipartOptions::default().with_transfer_timeout(deadline)?;
         let request =
-            ManagedMultipartUploadRequest::from_path(self.blob_key(digest)?, snapshot.path());
+            ManagedMultipartUploadRequest::from_path(self.blob_key(digest)?, snapshot.path())
+                .with_options(options);
         let upload = self.client.multipart_upload(request);
         tokio::pin!(upload);
-        let timer = tokio::time::sleep(deadline);
-        tokio::pin!(timer);
 
         tokio::select! {
             result = &mut upload => {
-                result?;
-                Ok(())
+                match result {
+                    Err(error) if error.timeout_phase() == Some(TimeoutPhase::Operation) => {
+                        Err(ArtifactError::DeadlineExceeded)
+                    }
+                    result => {
+                        result?;
+                        Ok(())
+                    }
+                }
             }
             () = cancellation.cancelled() => Err(ArtifactError::Cancelled),
-            () = &mut timer => Err(ArtifactError::DeadlineExceeded),
         }
         // Dropping `upload` on either early-return branch triggers the client's
         // owned cancellation path, which aborts an already-created multipart upload.

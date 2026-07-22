@@ -63,14 +63,14 @@
 
 #![forbid(unsafe_code)]
 
-pub mod client;
-pub mod config;
-pub mod credentials;
-pub mod endpoint;
-pub mod error;
-pub mod operation;
-pub mod retry;
-pub mod stream;
+mod client;
+mod config;
+mod credentials;
+mod endpoint;
+mod error;
+mod operation;
+mod retry;
+mod stream;
 
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -86,8 +86,20 @@ pub use credentials::{
     CachedCredentialsProvider, Credentials, CredentialsProvider, EnvironmentCredentialsProvider,
     StaticCredentialsProvider,
 };
-pub use endpoint::{Endpoint, EndpointUrl};
+pub use endpoint::Endpoint;
 pub use error::{ErrorCategory, RetryClassification, S3Error, TimeoutPhase};
-pub use operation::*;
+pub use operation::{
+    AbortMultipartUploadRequest, ByteRange, Checksum, ChecksumAlgorithm,
+    CompleteMultipartUploadOutput, CompleteMultipartUploadRequest, CompletedPart, Conditions,
+    CopyObjectOutput, CopyObjectRequest, CopySource, CreateMultipartUploadOutput,
+    CreateMultipartUploadRequest, DeleteError, DeleteObjectOutput, DeleteObjectRequest,
+    DeleteObjectsError, DeleteObjectsOutput, DeleteObjectsRequest, DeletedObject, GetObjectOutput,
+    GetObjectRequest, HeadObjectOutput, HeadObjectRequest, ListMultipartUploadsOutput,
+    ListMultipartUploadsRequest, ListObjectsV2Output, ListObjectsV2Request, ListedObject,
+    ManagedMultipartUploadRequest, MultipartError, MultipartOptions, MultipartUpload,
+    MultipartUploadEntry, ObjectKey, ObjectKeyError, ObjectMetadata, PageSize, PartNumber,
+    PresignedUrl, PutObjectOutput, PutObjectRequest, RangeError, RequestIds, UploadId,
+    UploadIdError, UploadPartOutput, UploadPartRequest,
+};
 pub use retry::RetryPolicy;
 pub use stream::{ByteStream, ResponseStream};

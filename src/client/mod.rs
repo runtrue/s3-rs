@@ -6,9 +6,6 @@ mod object;
 mod presign;
 mod request;
 
-#[cfg(feature = "fuzzing")]
-pub(crate) use multipart_upload::effective_concurrency;
-
 use std::fmt;
 use std::sync::Arc;
 
@@ -43,6 +40,14 @@ impl S3Client {
     /// Returns this client's validated configuration.
     pub fn config(&self) -> &S3Config {
         &self.inner.config
+    }
+
+    fn operation_target(&self, key: Option<&str>) -> Result<crate::endpoint::EndpointUrl, S3Error> {
+        self.inner.config.endpoint().object_url(
+            self.inner.config.bucket(),
+            key,
+            self.inner.config.addressing_style(),
+        )
     }
 }
 

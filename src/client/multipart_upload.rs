@@ -1,37 +1,38 @@
 //! Bounded orchestration for managed multipart uploads.
 
 use std::future::Future;
-use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 
 use super::S3Client;
+use super::request::OperationDeadline;
 use crate::error::S3Error;
 use crate::operation::{
     AbortMultipartUploadRequest, CompleteMultipartUploadOutput, CompleteMultipartUploadRequest,
     CompletedPart, CreateMultipartUploadRequest, ManagedMultipartUploadRequest, MultipartUpload,
     MultipartUploadSource, ObjectKey, PartNumber, UploadId, UploadPartRequest,
 };
-use crate::stream::ByteStream;
+use crate::stream::{ByteStream, FileSnapshot};
 
 impl S3Client {
     /// Uploads a replayable bytes or file source using bounded multipart requests.
     ///
-    /// Part size, concurrency, and total in-flight part bytes are taken from the
-    /// client configuration. File input is snapshotted before an upload is
-    /// created. Dropping this future cancels outstanding parts and leaves an
-    /// owned cleanup task to abort the upload. A normal failure waits for abort;
-    /// if abort also fails, [`S3Error::cleanup_failure`] exposes that error while
-    /// preserving the original failure.
+    /// Part size, concurrency, total in-flight part bytes, and deadlines are
+    /// derived from the request's [`crate::MultipartOptions`]. File input is
+    /// snapshotted before an upload is created. Dropping this future cancels
+    /// outstanding parts and leaves an owned cleanup task to quiesce transmitted
+    /// requests before aborting the upload. A normal failure waits for cleanup;
+    /// if cleanup cannot be confirmed,
+    /// [`S3Error::cleanup_failure`] exposes that error while preserving the
+    /// original failure.
     ///
     /// # Errors
     ///
@@ -43,11 +44,21 @@ impl S3Client {
         request: ManagedMultipartUploadRequest,
     ) -> Result<CompleteMultipartUploadOutput, S3Error> {
         let runtime = tokio::runtime::Handle::try_current().map_err(S3Error::transport)?;
-        let cancellation = CancellationToken::new();
+        let transfer_deadline = OperationDeadline::new(request.options().transfer_timeout());
+        let cleanup_timeout = request.options().cleanup_timeout();
+        let cancellation = Cancellation::new();
         let worker_cancellation = cancellation.clone();
         let client = self.clone();
-        let handle = runtime
-            .spawn(async move { run_multipart_upload(client, request, worker_cancellation).await });
+        let handle = runtime.spawn(async move {
+            run_multipart_upload(
+                client,
+                request,
+                worker_cancellation,
+                transfer_deadline,
+                cleanup_timeout,
+            )
+            .await
+        });
         OwnedMultipartTask {
             cancellation,
             handle,
@@ -57,7 +68,7 @@ impl S3Client {
 }
 
 struct OwnedMultipartTask {
-    cancellation: CancellationToken,
+    cancellation: Cancellation,
     handle: JoinHandle<Result<CompleteMultipartUploadOutput, S3Error>>,
 }
 
@@ -79,17 +90,56 @@ impl Drop for OwnedMultipartTask {
     }
 }
 
+#[derive(Clone)]
+struct Cancellation {
+    sender: watch::Sender<bool>,
+}
+
+impl Cancellation {
+    fn new() -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender }
+    }
+
+    fn cancel(&self) {
+        self.sender.send_replace(true);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        *self.sender.borrow()
+    }
+
+    async fn cancelled(&self) {
+        let mut receiver = self.sender.subscribe();
+        while !*receiver.borrow() {
+            if receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 async fn run_multipart_upload(
     client: S3Client,
     request: ManagedMultipartUploadRequest,
-    cancellation: CancellationToken,
+    cancellation: Cancellation,
+    transfer_deadline: OperationDeadline,
+    cleanup_timeout: Duration,
 ) -> Result<CompleteMultipartUploadOutput, S3Error> {
+    let options = request.options();
     let source = tokio::select! {
+        biased;
         () = cancellation.cancelled() => return Err(cancelled()),
-        result = PreparedMultipartSource::prepare(request.source) => result?,
+        result = tokio::time::timeout_at(
+            transfer_deadline.instant(),
+            PreparedMultipartSource::prepare(request.source),
+        ) => result.map_err(|_| transfer_timeout())??,
     };
-    let part_size = client.config().multipart_part_size();
+    let part_size = options.part_size();
     let part_count = source.part_count(part_size)?;
+    if cancellation.is_cancelled() {
+        return Err(cancelled());
+    }
 
     let mut create = CreateMultipartUploadRequest::new(request.key.clone());
     create.content_type = request.content_type;
@@ -97,113 +147,212 @@ async fn run_multipart_upload(
     // Once creation starts, allow it to finish even after cancellation so a
     // successful response cannot be discarded together with the upload ID
     // needed for cleanup.
-    let created = client.create_multipart_upload(create).await?;
+    let created = client
+        .create_multipart_upload_with_deadline(create, &transfer_deadline)
+        .await?;
     let upload_id = created.upload_id().clone();
 
     let result = upload_parts(
-        &client,
-        request.key.clone(),
-        upload_id.clone(),
-        Arc::new(source),
-        part_size,
+        PartUploadContext {
+            client: client.clone(),
+            key: request.key.clone(),
+            upload_id: upload_id.clone(),
+            source: Arc::new(source),
+            part_size,
+            deadline: transfer_deadline,
+        },
         part_count,
+        options.concurrency(),
         &cancellation,
+        cleanup_timeout,
     )
-    .await
-    .and_then(|upload| {
-        CompleteMultipartUploadRequest::new(
-            upload.key().clone(),
-            upload.upload_id().clone(),
-            upload.completed_parts().to_vec(),
-        )
-        .map_err(|error| S3Error::integrity(error.to_string()))
-    });
+    .await;
 
-    let completion = match result {
-        Ok(completion) => {
-            tokio::select! {
-                biased;
-                result = client.complete_multipart_upload(completion) => result,
-                () = cancellation.cancelled() => Err(cancelled()),
-            }
+    let upload = match result {
+        Ok(upload) => upload,
+        Err(failure) => {
+            return fail_with_abort(&client, request.key, upload_id, failure).await;
         }
-        Err(error) => Err(error),
+    };
+    let completion = match CompleteMultipartUploadRequest::new(
+        upload.key().clone(),
+        upload.upload_id().clone(),
+        upload.completed_parts().to_vec(),
+    ) {
+        Ok(completion) => completion,
+        Err(error) => {
+            return fail_with_abort(
+                &client,
+                request.key,
+                upload_id,
+                ManagedUploadFailure::new(S3Error::integrity(error.to_string()), cleanup_timeout),
+            )
+            .await;
+        }
+    };
+
+    let completion = tokio::select! {
+        biased;
+        result = client.complete_multipart_upload_with_deadline(
+            completion,
+            &transfer_deadline,
+        ) => result,
+        () = cancellation.cancelled() => Err(cancelled()),
     };
 
     match completion {
         Ok(output) => Ok(output),
         Err(primary) => {
-            let cleanup = client
-                .abort_multipart_upload(AbortMultipartUploadRequest::new(request.key, upload_id))
-                .await
-                .map(|_| ());
-            Err(attach_cleanup_failure(primary, cleanup))
+            fail_with_abort(
+                &client,
+                request.key,
+                upload_id,
+                ManagedUploadFailure::new(primary, cleanup_timeout),
+            )
+            .await
         }
     }
 }
 
-async fn upload_parts(
-    client: &S3Client,
+#[derive(Clone)]
+struct PartUploadContext {
+    client: S3Client,
     key: ObjectKey,
     upload_id: UploadId,
     source: Arc<PreparedMultipartSource>,
     part_size: u64,
+    deadline: OperationDeadline,
+}
+
+async fn upload_parts(
+    context: PartUploadContext,
     part_count: u16,
-    cancellation: &CancellationToken,
-) -> Result<MultipartUpload, S3Error> {
-    let concurrency = effective_concurrency(
-        client.config().multipart_concurrency(),
-        client.config().max_multipart_in_flight_bytes(),
-        part_size,
-    )?;
+    concurrency: usize,
+    cancellation: &Cancellation,
+    cleanup_timeout: Duration,
+) -> Result<MultipartUpload, ManagedUploadFailure> {
     let mut next_part = 1_u16;
     let mut pending = FuturesUnordered::new();
-    let mut upload = MultipartUpload::new(key.clone(), upload_id.clone());
+    let mut upload = MultipartUpload::new(context.key.clone(), context.upload_id.clone());
+    let deadline_sleep = tokio::time::sleep_until(context.deadline.instant());
+    tokio::pin!(deadline_sleep);
 
     loop {
         while pending.len() < concurrency && next_part <= part_count {
-            pending.push(upload_one_part(
-                client.clone(),
-                key.clone(),
-                upload_id.clone(),
-                Arc::clone(&source),
-                part_size,
-                next_part,
-            ));
+            pending.push(upload_one_part(context.clone(), next_part));
             next_part += 1;
         }
         if pending.is_empty() {
             return Ok(upload);
         }
         let completed = tokio::select! {
-            () = cancellation.cancelled() => return Err(cancelled()),
+            () = cancellation.cancelled() => Err(cancelled()),
+            () = &mut deadline_sleep => Err(transfer_timeout()),
             result = pending.next() => result
-                .ok_or_else(|| S3Error::integrity("multipart scheduler lost an in-flight part"))??,
+                .ok_or_else(|| S3Error::integrity("multipart scheduler lost an in-flight part"))
+                .and_then(|result| result),
         };
-        upload
-            .record_part(completed)
-            .map_err(|error| S3Error::integrity(error.to_string()))?;
+        let completed = match completed {
+            Ok(completed) => completed,
+            Err(primary) => {
+                return Err(quiesce_part_requests(primary, &mut pending, cleanup_timeout).await);
+            }
+        };
+        if let Err(error) = upload.record_part(completed) {
+            return Err(quiesce_part_requests(
+                S3Error::integrity(error.to_string()),
+                &mut pending,
+                cleanup_timeout,
+            )
+            .await);
+        }
     }
 }
 
-async fn upload_one_part(
-    client: S3Client,
+struct ManagedUploadFailure {
+    primary: S3Error,
+    cleanup_deadline: OperationDeadline,
+    quiesce_failure: Option<S3Error>,
+}
+
+impl ManagedUploadFailure {
+    fn new(primary: S3Error, cleanup_timeout: Duration) -> Self {
+        Self {
+            primary,
+            cleanup_deadline: OperationDeadline::new(cleanup_timeout),
+            quiesce_failure: None,
+        }
+    }
+}
+
+async fn quiesce_part_requests<F>(
+    primary: S3Error,
+    pending: &mut FuturesUnordered<F>,
+    cleanup_timeout: Duration,
+) -> ManagedUploadFailure
+where
+    F: Future<Output = Result<CompletedPart, S3Error>>,
+{
+    let mut failure = ManagedUploadFailure::new(primary, cleanup_timeout);
+    let settle_until = tokio::time::Instant::now() + cleanup_timeout / 2;
+    while !pending.is_empty() {
+        match tokio::time::timeout_at(settle_until, pending.next()).await {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => {
+                failure.quiesce_failure = Some(S3Error::timeout(
+                    crate::error::TimeoutPhase::Operation,
+                    "multipart cleanup could not quiesce in-flight part requests",
+                ));
+                break;
+            }
+        }
+    }
+    failure
+}
+
+async fn fail_with_abort(
+    client: &S3Client,
     key: ObjectKey,
     upload_id: UploadId,
-    source: Arc<PreparedMultipartSource>,
-    part_size: u64,
+    failure: ManagedUploadFailure,
+) -> Result<CompleteMultipartUploadOutput, S3Error> {
+    let abort = client
+        .abort_multipart_upload_with_deadline(
+            AbortMultipartUploadRequest::new(key, upload_id),
+            &failure.cleanup_deadline,
+        )
+        .await
+        .map(|_| ());
+    let cleanup = match (abort, failure.quiesce_failure) {
+        (Ok(()), None) => Ok(()),
+        (Err(error), None) | (Ok(()), Some(error)) => Err(error),
+        (Err(abort), Some(quiesce)) => Err(abort.with_cleanup_failure(quiesce)),
+    };
+    Err(attach_cleanup_failure(failure.primary, cleanup))
+}
+
+async fn upload_one_part(
+    context: PartUploadContext,
     part_number: u16,
 ) -> Result<CompletedPart, S3Error> {
-    let body = source.read_part(part_size, part_number).await?;
+    let body = context
+        .source
+        .read_part(context.part_size, part_number)
+        .await?;
     let number = PartNumber::new(part_number)
         .ok_or_else(|| S3Error::integrity("generated multipart part number is invalid"))?;
-    let output = client
-        .upload_part(UploadPartRequest::new(
-            key,
-            upload_id,
-            number,
-            ByteStream::from_bytes(body),
-        ))
+    let output = context
+        .client
+        .upload_part_with_deadline(
+            UploadPartRequest::new(
+                context.key,
+                context.upload_id,
+                number,
+                ByteStream::from_bytes(body),
+            ),
+            &context.deadline,
+        )
         .await?;
     CompletedPart::new(output.part_number.get(), output.e_tag)
         .map(|part| part.with_checksum(output.checksum))
@@ -221,28 +370,16 @@ fn cancelled() -> S3Error {
     S3Error::cancellation("multipart upload was cancelled")
 }
 
-pub(crate) fn effective_concurrency(
-    configured: usize,
-    byte_budget: u64,
-    part_size: u64,
-) -> Result<usize, S3Error> {
-    let byte_slots = byte_budget / part_size;
-    let byte_slots = usize::try_from(byte_slots).unwrap_or(usize::MAX);
-    let concurrency = configured.min(byte_slots);
-    if concurrency == 0 {
-        return Err(S3Error::configuration(
-            "multipart in-flight byte budget cannot hold one part",
-        ));
-    }
-    Ok(concurrency)
+fn transfer_timeout() -> S3Error {
+    S3Error::timeout(
+        crate::error::TimeoutPhase::Operation,
+        "managed multipart upload exceeded its transfer deadline",
+    )
 }
 
 enum PreparedMultipartSource {
     Bytes(Bytes),
-    File {
-        path: tempfile::TempPath,
-        length: u64,
-    },
+    File(FileSnapshot),
 }
 
 impl PreparedMultipartSource {
@@ -254,46 +391,14 @@ impl PreparedMultipartSource {
     }
 
     async fn snapshot(path: PathBuf) -> Result<Self, S3Error> {
-        let mut input = File::open(path).await.map_err(S3Error::transport)?;
-        let metadata = input.metadata().await.map_err(S3Error::transport)?;
-        if !metadata.is_file() {
-            return Err(S3Error::configuration(
-                "multipart upload path must identify a regular file",
-            ));
-        }
-        let snapshot = tempfile::NamedTempFile::new().map_err(S3Error::transport)?;
-        let (snapshot_file, snapshot_path) = snapshot.into_parts();
-        let mut output = File::from_std(snapshot_file);
-        let length = tokio::io::copy(&mut input, &mut output)
-            .await
-            .map_err(S3Error::transport)?;
-        output.flush().await.map_err(S3Error::transport)?;
-        drop(output);
-        let mut permissions = std::fs::metadata(&snapshot_path)
-            .map_err(S3Error::transport)?
-            .permissions();
-        permissions.set_readonly(true);
-        std::fs::set_permissions(&snapshot_path, permissions).map_err(S3Error::transport)?;
-        let actual = tokio::fs::metadata(&snapshot_path)
-            .await
-            .map_err(S3Error::transport)?
-            .len();
-        if actual != length {
-            return Err(S3Error::integrity(
-                "multipart source snapshot length changed while preparing",
-            ));
-        }
-        Ok(Self::File {
-            path: snapshot_path,
-            length,
-        })
+        FileSnapshot::create(path, false).await.map(Self::File)
     }
 
     fn length(&self) -> Result<u64, S3Error> {
         match self {
             Self::Bytes(bytes) => u64::try_from(bytes.len())
                 .map_err(|_| S3Error::configuration("multipart byte length does not fit in u64")),
-            Self::File { length, .. } => Ok(*length),
+            Self::File(snapshot) => Ok(snapshot.length()),
         }
     }
 
@@ -332,19 +437,7 @@ impl PreparedMultipartSource {
                 })?;
                 Ok(bytes.slice(start..start + length_usize))
             }
-            Self::File { path, .. } => {
-                use tokio::io::AsyncSeekExt as _;
-
-                let mut file = File::open(path).await.map_err(S3Error::transport)?;
-                file.seek(io::SeekFrom::Start(offset))
-                    .await
-                    .map_err(S3Error::transport)?;
-                let mut bytes = BytesMut::zeroed(length_usize);
-                file.read_exact(&mut bytes)
-                    .await
-                    .map_err(S3Error::transport)?;
-                Ok(bytes.freeze())
-            }
+            Self::File(snapshot) => snapshot.read_range(offset, length_usize).await,
         }
     }
 }
@@ -356,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn task_drop_signals_owned_cleanup_worker() {
-        let cancellation = CancellationToken::new();
+        let cancellation = Cancellation::new();
         let worker = cancellation.clone();
         let (finished, observed) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(async move {
@@ -405,21 +498,27 @@ mod tests {
         assert_eq!(source.read_part(8, 1).await.unwrap(), "original");
     }
 
+    #[tokio::test]
+    async fn cleanup_reports_part_requests_that_cannot_quiesce() {
+        let mut pending = FuturesUnordered::new();
+        pending.push(std::future::pending::<Result<CompletedPart, S3Error>>());
+
+        let failure = quiesce_part_requests(
+            S3Error::cancellation("primary"),
+            &mut pending,
+            Duration::from_millis(10),
+        )
+        .await;
+
+        assert!(failure.quiesce_failure.is_some());
+        assert_eq!(failure.primary.category(), ErrorCategory::Cancellation);
+    }
+
     #[test]
     fn part_count_rejects_empty_and_excessive_sources() {
         let empty = PreparedMultipartSource::Bytes(Bytes::new());
         assert!(empty.part_count(5).is_err());
-        let too_large = PreparedMultipartSource::File {
-            path: tempfile::NamedTempFile::new().unwrap().into_temp_path(),
-            length: 10_001,
-        };
+        let too_large = PreparedMultipartSource::Bytes(Bytes::from(vec![0_u8; 10_001]));
         assert!(too_large.part_count(1).is_err());
-    }
-
-    #[test]
-    fn concurrency_is_limited_by_count_and_byte_budget() {
-        assert_eq!(effective_concurrency(8, 24, 8).unwrap(), 3);
-        assert_eq!(effective_concurrency(2, 24, 8).unwrap(), 2);
-        assert!(effective_concurrency(2, 7, 8).is_err());
     }
 }

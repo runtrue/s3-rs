@@ -9,12 +9,12 @@ use bytes::Bytes;
 use futures_core::Stream;
 use hyper::body::{Body, Frame, SizeHint};
 use sha2::{Digest, Sha256};
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tokio_util::io::ReaderStream;
 
 use crate::error::S3Error;
+use crate::stream::FileSnapshot;
 
 type UploadItems = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send + 'static>>;
 
@@ -76,7 +76,7 @@ impl ByteStream {
     pub(crate) async fn prepare(self) -> Result<PreparedBody, S3Error> {
         match self.source {
             UploadSource::Bytes(bytes) => {
-                let sha256 = Sha256::digest(&bytes).into();
+                let sha256 = cooperative_sha256(&bytes).await;
                 let length = u64::try_from(bytes.len()).map_err(|_| {
                     S3Error::configuration("in-memory body length does not fit in u64")
                 })?;
@@ -98,6 +98,17 @@ impl ByteStream {
             }),
         }
     }
+}
+
+async fn cooperative_sha256(bytes: &[u8]) -> [u8; 32] {
+    const CHUNK_SIZE: usize = 1024 * 1024;
+
+    let mut hasher = Sha256::new();
+    for chunk in bytes.chunks(CHUNK_SIZE) {
+        hasher.update(chunk);
+        tokio::task::yield_now().await;
+    }
+    hasher.finalize().into()
 }
 
 impl From<Bytes> for ByteStream {
@@ -134,52 +145,18 @@ impl fmt::Debug for ByteStream {
 }
 
 async fn prepare_file(path: PathBuf) -> Result<PreparedBody, S3Error> {
-    let mut file = File::open(&path).await.map_err(S3Error::transport)?;
-    let metadata = file.metadata().await.map_err(S3Error::transport)?;
-    if !metadata.is_file() {
-        return Err(S3Error::configuration(
-            "upload path must identify a regular file",
-        ));
-    }
-
-    // Copy to a private disk-backed snapshot while hashing. Every attempt opens
-    // this immutable snapshot, so the signed bytes cannot diverge if the caller's
-    // original path is replaced or modified during retries.
-    let snapshot = tempfile::NamedTempFile::new().map_err(S3Error::transport)?;
-    let (snapshot_file, snapshot_path) = snapshot.into_parts();
-    let mut snapshot_file = File::from_std(snapshot_file);
-    let mut hasher = Sha256::new();
-    let mut length = 0_u64;
-    let mut buffer = vec![0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).await.map_err(S3Error::transport)?;
-        if read == 0 {
-            break;
-        }
-        length =
-            length
-                .checked_add(u64::try_from(read).map_err(|_| {
-                    S3Error::integrity("upload file chunk length does not fit in u64")
-                })?)
-                .ok_or_else(|| S3Error::integrity("upload file length overflow"))?;
-        hasher.update(&buffer[..read]);
-        snapshot_file
-            .write_all(&buffer[..read])
-            .await
-            .map_err(S3Error::transport)?;
-    }
-    snapshot_file.flush().await.map_err(S3Error::transport)?;
-    drop(snapshot_file);
-    let mut permissions = std::fs::metadata(&snapshot_path)
-        .map_err(S3Error::transport)?
-        .permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&snapshot_path, permissions).map_err(S3Error::transport)?;
+    // Every attempt opens the same private snapshot, so later changes to the
+    // caller's path cannot change already signed bytes.
+    let snapshot = FileSnapshot::create(path, true).await?;
+    let length = snapshot.length();
+    let sha256 = snapshot
+        .sha256()
+        .ok_or_else(|| S3Error::integrity("upload snapshot digest was not calculated"))?;
 
     Ok(PreparedBody {
-        source: PreparedSource::FileSnapshot(snapshot_path),
+        source: PreparedSource::FileSnapshot(snapshot),
         length,
-        sha256: hasher.finalize().into(),
+        sha256,
     })
 }
 
@@ -191,7 +168,7 @@ pub(crate) struct PreparedBody {
 
 enum PreparedSource {
     Bytes(Bytes),
-    FileSnapshot(tempfile::TempPath),
+    FileSnapshot(FileSnapshot),
     OneShot(Mutex<Option<UploadItems>>),
 }
 
@@ -221,8 +198,8 @@ impl PreparedBody {
                 self.length,
                 self.sha256,
             )),
-            PreparedSource::FileSnapshot(path) => {
-                let file = File::open(path).await.map_err(S3Error::transport)?;
+            PreparedSource::FileSnapshot(snapshot) => {
+                let file = snapshot.open().await?;
                 let stream = ReaderStream::with_capacity(file.take(self.length), 64 * 1024);
                 Ok(TransportBody::new(
                     Box::pin(stream),
@@ -395,7 +372,9 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::future::{Future as _, poll_fn};
     use std::io;
+    use std::task::Poll;
 
     use bytes::Bytes;
     use futures_util::stream;
@@ -435,6 +414,19 @@ mod tests {
             .to_bytes();
         assert_eq!(first, Bytes::from_static(b"hello"));
         assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn hashing_large_in_memory_bodies_is_cooperative() {
+        let mut preparation =
+            Box::pin(ByteStream::from_bytes(vec![0_u8; 2 * 1024 * 1024]).prepare());
+
+        poll_fn(|context| match preparation.as_mut().poll(context) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("large body hashing completed in one cooperative poll"),
+        })
+        .await;
+        preparation.await.expect("body finishes preparing");
     }
 
     #[tokio::test]

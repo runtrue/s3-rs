@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use s3_wire::credentials::{Credentials, StaticCredentialsProvider};
-use s3_wire::{AddressingStyle, Endpoint, ObjectKey, PageSize, S3Config, S3Error, UploadId};
+use s3_wire::{
+    Credentials, ObjectKey, PageSize, S3Config, S3Error, StaticCredentialsProvider, UploadId,
+};
 
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 
@@ -19,26 +20,6 @@ proptest! {
             }
             Err(_) => prop_assert!(value.len() > MAX_OBJECT_KEY_BYTES),
         }
-    }
-
-    #[test]
-    fn endpoint_paths_preserve_origin_and_key_boundaries(
-        key in "[^\\x00]{1,256}",
-        base_segments in proptest::collection::vec("[a-z0-9._~-]{1,12}", 0..5),
-    ) {
-        let base = if base_segments.is_empty() {
-            String::new()
-        } else {
-            format!("/{}", base_segments.join("/"))
-        };
-        let endpoint = Endpoint::new(format!("https://storage.example.test:9443{base}")).unwrap();
-        let url = endpoint
-            .object_url("bucket", Some(&key), AddressingStyle::Path)
-            .unwrap();
-        prop_assert_eq!(url.scheme(), "https");
-        prop_assert_eq!(url.authority(), "storage.example.test:9443");
-        prop_assert!(!url.path_and_query().contains('#'));
-        prop_assert!(url.path_and_query().starts_with('/'));
     }
 
     #[test]

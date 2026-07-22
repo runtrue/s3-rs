@@ -58,6 +58,17 @@ impl S3Client {
         )
         .await
     }
+
+    pub(in crate::client) async fn drain_success_response(
+        &self,
+        response: Response<Incoming>,
+        deadline: &OperationDeadline,
+    ) -> Result<(), S3Error> {
+        const MAXIMUM: usize = 8 * 1024;
+        self.collect_response(response, MAXIMUM, deadline)
+            .await
+            .map(|_| ())
+    }
 }
 
 pub(super) fn operation_timeout() -> S3Error {

@@ -11,13 +11,18 @@ Releases are published to crates.io from an existing `vMAJOR.MINOR.PATCH` tag by
 
    ```sh
    cargo fmt --all -- --check
+   cargo clippy --locked --all-targets -- -D warnings
    cargo clippy --locked --all-targets --all-features -- -D warnings
+   cargo test --locked --all-targets
    cargo test --locked --all-targets --all-features
    RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
-   cargo semver-checks check-release
    cargo package --locked
    cargo publish --locked --dry-run
    ```
+
+   The public API remains intentionally unstable in the `0.1.x` line while it
+   has a single owner. Add semantic-version compatibility checks to this gate
+   once downstream compatibility becomes a release requirement.
 
 5. Inspect the packaged file list:
 
@@ -48,15 +53,16 @@ Releases are published to crates.io from an existing `vMAJOR.MINOR.PATCH` tag by
 Create an annotated tag on the release commit and push it:
 
 ```sh
-git tag -a v0.1.0 -m "Release 0.1.0"
-git push origin v0.1.0
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+git tag -a "v$version" -m "Release $version"
+git push origin "v$version"
 ```
 
 The release workflow verifies that:
 
 - the tag and `Cargo.toml` version agree;
 - the tag points to a commit contained in `main`;
-- formatting, Clippy, tests, rustdoc, semver checks, packaging, and publish dry-run pass; and
+- formatting, Clippy, tests, rustdoc, packaging, and publish dry-run pass; and
 - the `CRATES_APIKEY` organization secret is available to the repository for `cargo publish`.
 
 The workflow can also be dispatched manually for an existing tag.

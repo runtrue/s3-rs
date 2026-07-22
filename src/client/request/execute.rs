@@ -12,14 +12,15 @@ use super::signing::SignedRequestInput;
 use crate::endpoint::EndpointUrl;
 use crate::error::{S3Error, TimeoutPhase};
 use crate::signing::{QueryParam, canonical_query, payload_sha256_hex};
-use crate::stream::PreparedBody;
+use crate::stream::{ByteStream, PreparedBody};
 
+#[derive(Clone, Copy)]
 pub(in crate::client) struct OperationDeadline {
     at: Instant,
 }
 
 impl OperationDeadline {
-    pub(super) fn new(timeout: Duration) -> Self {
+    pub(in crate::client) fn new(timeout: Duration) -> Self {
         Self {
             at: Instant::now() + timeout,
         }
@@ -39,6 +40,15 @@ impl OperationDeadline {
                     "S3 operation exceeded its overall deadline",
                 )
             })
+    }
+
+    pub(in crate::client) async fn prepare_body(
+        &self,
+        body: ByteStream,
+    ) -> Result<PreparedBody, S3Error> {
+        tokio::time::timeout_at(self.instant(), body.prepare())
+            .await
+            .map_err(|_| operation_timeout())?
     }
 }
 
@@ -146,5 +156,35 @@ impl S3Client {
             }
             tokio::time::sleep(delay).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{Future as _, poll_fn};
+    use std::task::Poll;
+    use std::time::Duration;
+
+    use super::OperationDeadline;
+    use crate::error::{ErrorCategory, TimeoutPhase};
+    use crate::stream::ByteStream;
+
+    #[tokio::test(start_paused = true)]
+    async fn body_preparation_obeys_the_operation_deadline() {
+        let deadline = OperationDeadline::new(Duration::from_secs(1));
+        let mut preparation =
+            Box::pin(deadline.prepare_body(ByteStream::from_bytes(vec![0_u8; 4 * 1024 * 1024])));
+        poll_fn(|context| match preparation.as_mut().poll(context) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("large body preparation completed in one poll"),
+        })
+        .await;
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let Err(error) = preparation.await else {
+            panic!("body preparation exceeded its operation deadline");
+        };
+        assert_eq!(error.category(), ErrorCategory::Timeout);
+        assert_eq!(error.timeout_phase(), Some(TimeoutPhase::Operation));
     }
 }

@@ -17,3 +17,7 @@ Each standalone binary constructs one client for the same region and bucket with
 ## Caveats
 
 This measures three minimal construction programs, not API completeness, runtime throughput, memory use, or operational correctness. Feature sets are aligned around Tokio and Rustls where each crate permits it, but crate architectures and feature boundaries differ. Build timings depend on this machine, filesystem, process load, and warm registry/download caches. The local `s3-wire` path dependency represents the checked-out source, while external dependencies are exact-version pinned and every comparison has a committed lockfile. Binary hashes and complete raw values are retained in `results.json`.
+
+The harness now retains a representative HEAD-object operation in each binary.
+The next recorded baseline will supersede these construction-only numbers rather
+than being directly comparable to them.

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fmt, num::NonZeroU16};
 
 use super::{ByteRange, Checksum, ChecksumAlgorithm, Conditions, ObjectKey, RequestIds};
+use crate::stream::{ByteStream, ResponseStream};
 
 /// Metadata common to object retrieval and inspection responses.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -24,11 +25,11 @@ pub struct ObjectMetadata {
 }
 
 /// Request to upload one object.
-pub struct PutObjectRequest<B> {
+pub struct PutObjectRequest {
     /// Destination object key.
     pub key: ObjectKey,
-    /// Upload body. Replayability is determined by the body type.
-    pub body: B,
+    /// Upload body. Replayability is determined by its selected source.
+    pub body: ByteStream,
     /// Optional media type.
     pub content_type: Option<String>,
     /// Caller-defined object metadata.
@@ -39,9 +40,9 @@ pub struct PutObjectRequest<B> {
     pub checksum_algorithm: Option<ChecksumAlgorithm>,
 }
 
-impl<B> PutObjectRequest<B> {
+impl PutObjectRequest {
     /// Constructs a request with no optional headers.
-    pub fn new(key: ObjectKey, body: B) -> Self {
+    pub fn new(key: ObjectKey, body: ByteStream) -> Self {
         Self {
             key,
             body,
@@ -53,7 +54,7 @@ impl<B> PutObjectRequest<B> {
     }
 }
 
-impl<B> fmt::Debug for PutObjectRequest<B> {
+impl fmt::Debug for PutObjectRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PutObjectRequest")
@@ -106,16 +107,16 @@ impl GetObjectRequest {
 }
 
 /// A streaming object download and its response metadata.
-pub struct GetObjectOutput<B> {
+pub struct GetObjectOutput {
     /// Response metadata parsed before the body is consumed.
     pub metadata: ObjectMetadata,
     /// Streaming response body.
-    pub body: B,
+    pub body: ResponseStream,
     /// Inclusive range returned for a ranged request.
     pub content_range: Option<(u64, u64, Option<u64>)>,
 }
 
-impl<B> fmt::Debug for GetObjectOutput<B> {
+impl fmt::Debug for GetObjectOutput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("GetObjectOutput")

@@ -298,11 +298,7 @@ fn client_from_environment() -> TestResult<S3Client> {
         .credentials_provider(Arc::new(StaticCredentialsProvider::new(credentials)))
         .connect_timeout(Duration::from_secs(10))
         .attempt_timeout(Duration::from_secs(60))
-        .operation_timeout(Duration::from_secs(5 * 60))
-        .multipart_part_size(FIRST_PART_SIZE as u64)
-        .multipart_threshold(FIRST_PART_SIZE as u64)
-        .multipart_concurrency(2)
-        .max_multipart_in_flight_bytes((2 * FIRST_PART_SIZE) as u64);
+        .operation_timeout(Duration::from_secs(5 * 60));
     if !endpoint.is_https() {
         builder = builder.allow_http_for_local_testing();
     }

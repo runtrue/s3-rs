@@ -1,5 +1,6 @@
 use super::*;
 use crate::operation::ObjectKey;
+use crate::stream::ByteStream;
 
 #[test]
 fn completion_rejects_missing_duplicate_and_unordered_parts() {
@@ -80,7 +81,7 @@ fn upload_id_and_requests_redact_formatting() {
         ObjectKey::new("key").unwrap(),
         upload_id,
         PartNumber::new(1).unwrap(),
-        b"secret body".as_slice(),
+        ByteStream::from_bytes(b"secret body".as_slice()),
     );
     let debug = format!("{request:?}");
     assert!(debug.contains("UploadId([REDACTED])"));
@@ -96,7 +97,7 @@ fn request_constructors_retain_validated_upload_ids() {
         key.clone(),
         upload_id.clone(),
         PartNumber::new(1).unwrap(),
-        (),
+        ByteStream::from_bytes(Vec::new()),
     );
     let abort = AbortMultipartUploadRequest::new(key, upload_id);
 
@@ -116,4 +117,34 @@ fn managed_request_debug_redacts_source_and_metadata_values() {
     assert!(rendered.contains("name"));
     assert!(!rendered.contains("/sensitive/source/path"));
     assert!(!rendered.contains("sensitive-value"));
+}
+
+#[test]
+fn multipart_options_validate_and_derive_the_buffer_bound() {
+    assert!(MultipartOptions::new(5 * 1024 * 1024 - 1, 1).is_err());
+    assert!(MultipartOptions::new(5 * 1024 * 1024, 0).is_err());
+    assert!(MultipartOptions::new(5 * 1024 * 1024, 65).is_err());
+
+    let options = MultipartOptions::new(8 * 1024 * 1024, 4).unwrap();
+    assert_eq!(options.maximum_buffered_bytes(), 32 * 1024 * 1024);
+    assert!(
+        options
+            .with_transfer_timeout(std::time::Duration::ZERO)
+            .is_err()
+    );
+    assert!(
+        options
+            .with_cleanup_timeout(std::time::Duration::ZERO)
+            .is_err()
+    );
+    assert!(
+        options
+            .with_transfer_timeout(std::time::Duration::MAX)
+            .is_err()
+    );
+    assert!(
+        options
+            .with_cleanup_timeout(std::time::Duration::MAX)
+            .is_err()
+    );
 }

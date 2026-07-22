@@ -56,7 +56,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Build rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
@@ -85,7 +87,9 @@ jobs:
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-test-
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
       - name: Run test suite
-        run: cargo test --locked --all-targets --all-features
+        run: |
+          cargo test --locked --all-targets
+          cargo test --locked --all-targets --all-features
 
   auxiliary:
     name: Auxiliary crates
@@ -177,19 +181,11 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            ~/.cargo/bin/cargo-semver-checks
             target
-          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-semver-0.49.0-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-semver-0.49.0-
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
-      - name: Install cargo-semver-checks
-        run: |
-          if ! cargo semver-checks --version 2>/dev/null | grep -Fq '0.49.0'; then
-            cargo install cargo-semver-checks --locked --version 0.49.0
-          fi
-      - name: Check public API compatibility
-        run: cargo semver-checks check-release
       - name: Build package archive
         run: cargo package --locked
       - name: Validate publish without uploading

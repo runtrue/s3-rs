@@ -62,7 +62,7 @@ The crate forbids unsafe code.
 
 ## Resource and availability controls
 
-Configuration separately bounds:
+Client configuration and request-scoped options bound:
 
 - connection timeout;
 - request-attempt timeout;
@@ -72,8 +72,7 @@ Configuration separately bounds:
 - backoff and accepted `Retry-After` delay;
 - XML and error response bytes;
 - list pages;
-- multipart part size and concurrency; and
-- multipart bytes in flight.
+- multipart part size and concurrency, with a derived in-flight byte bound.
 
 File-backed replay creates a disk snapshot. Operators must provide enough temporary space and protect it with suitable permissions and quotas.
 

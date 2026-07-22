@@ -31,10 +31,8 @@ impl S3Client {
     /// # Errors
     ///
     /// Returns an error when request preparation, signing, transport, or response parsing fails.
-    pub async fn put_object(
-        &self,
-        request: PutObjectRequest<ByteStream>,
-    ) -> Result<PutObjectOutput, S3Error> {
+    pub async fn put_object(&self, request: PutObjectRequest) -> Result<PutObjectOutput, S3Error> {
+        let deadline = self.deadline();
         let PutObjectRequest {
             key,
             body,
@@ -43,14 +41,13 @@ impl S3Client {
             conditions,
             checksum_algorithm,
         } = request;
-        let prepared = body.prepare().await?;
+        let prepared = deadline.prepare_body(body).await?;
         let mut headers = HeaderMap::new();
         insert_optional_header(&mut headers, CONTENT_TYPE, content_type.as_deref())?;
         insert_conditions(&mut headers, &conditions, "")?;
         insert_user_metadata(&mut headers, &user_metadata)?;
         insert_upload_checksum(&mut headers, checksum_algorithm, &prepared)?;
-        let target = self.object_operation_target(Some(key.as_str()))?;
-        let deadline = self.deadline();
+        let target = self.operation_target(Some(key.as_str()))?;
         let response = self
             .send_signed(
                 Method::PUT,
@@ -81,10 +78,7 @@ impl S3Client {
     /// # Errors
     ///
     /// Returns an error when request validation, signing, transport, or header parsing fails.
-    pub async fn get_object(
-        &self,
-        request: GetObjectRequest,
-    ) -> Result<GetObjectOutput<ResponseStream>, S3Error> {
+    pub async fn get_object(&self, request: GetObjectRequest) -> Result<GetObjectOutput, S3Error> {
         let mut headers = HeaderMap::new();
         insert_conditions(&mut headers, &request.conditions, "")?;
         insert_header(
@@ -96,7 +90,7 @@ impl S3Client {
             insert_header(&mut headers, RANGE, &range.to_header_value())?;
         }
         let query = optional_query("versionId", request.version_id.as_deref());
-        let target = self.object_operation_target(Some(request.key.as_str()))?;
+        let target = self.operation_target(Some(request.key.as_str()))?;
         let deadline = self.deadline();
         let response = self
             .send_signed(Method::GET, target, &query, headers, None, &deadline)
@@ -145,7 +139,7 @@ impl S3Client {
             "ENABLED",
         )?;
         let query = optional_query("versionId", request.version_id.as_deref());
-        let target = self.object_operation_target(Some(request.key.as_str()))?;
+        let target = self.operation_target(Some(request.key.as_str()))?;
         let deadline = self.deadline();
         let response = self
             .send_signed(Method::HEAD, target, &query, headers, None, &deadline)
@@ -172,7 +166,7 @@ impl S3Client {
         let mut headers = HeaderMap::new();
         insert_optional_header(&mut headers, IF_MATCH, request.if_match.as_deref())?;
         let query = optional_query("versionId", request.version_id.as_deref());
-        let target = self.object_operation_target(Some(request.key.as_str()))?;
+        let target = self.operation_target(Some(request.key.as_str()))?;
         let deadline = self.deadline();
         let response = self
             .send_signed(Method::DELETE, target, &query, headers, None, &deadline)
@@ -201,11 +195,12 @@ impl S3Client {
         &self,
         request: DeleteObjectsRequest,
     ) -> Result<DeleteObjectsOutput, S3Error> {
+        let deadline = self.deadline();
         let maximum = self.inner.config.max_xml_response_size();
         let xml = serialize_delete_objects(&request, maximum).map_err(protocol_error)?;
         let digest = Md5::digest(&xml);
         let content_md5 = BASE64_STANDARD.encode(digest);
-        let prepared = ByteStream::from_bytes(xml).prepare().await?;
+        let prepared = deadline.prepare_body(ByteStream::from_bytes(xml)).await?;
         let mut headers = HeaderMap::new();
         insert_header(&mut headers, CONTENT_TYPE, "application/xml")?;
         insert_header(
@@ -213,8 +208,7 @@ impl S3Client {
             HeaderName::from_static("content-md5"),
             &content_md5,
         )?;
-        let target = self.object_operation_target(None)?;
-        let deadline = self.deadline();
+        let target = self.operation_target(None)?;
         let response = self
             .send_signed(
                 Method::POST,
@@ -264,7 +258,7 @@ impl S3Client {
                 "REPLACE",
             )?;
         }
-        let target = self.object_operation_target(Some(request.destination.as_str()))?;
+        let target = self.operation_target(Some(request.destination.as_str()))?;
         let deadline = self.deadline();
         let response = self
             .send_signed(Method::PUT, target, &[], headers, None, &deadline)

@@ -17,8 +17,8 @@ use s3_wire::{
     AbortMultipartUploadRequest, ByteRange, ByteStream, CompleteMultipartUploadRequest,
     CompletedPart, CreateMultipartUploadRequest, Credentials, DeleteObjectRequest, Endpoint,
     ErrorCategory, GetObjectRequest, HeadObjectRequest, ListMultipartUploadsRequest,
-    ListObjectsV2Request, ManagedMultipartUploadRequest, ObjectKey, PageSize, PartNumber,
-    PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider, UploadPartRequest,
+    ListObjectsV2Request, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, PageSize,
+    PartNumber, PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider, UploadPartRequest,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpStream;
@@ -48,10 +48,6 @@ fn client() -> TestResult<S3Client> {
         .bucket(bucket)
         .region("us-east-1")
         .credentials_provider(Arc::new(StaticCredentialsProvider::new(credentials)))
-        .multipart_threshold(PART_SIZE as u64)
-        .multipart_part_size(PART_SIZE as u64)
-        .multipart_concurrency(2)
-        .max_multipart_in_flight_bytes((2 * PART_SIZE) as u64)
         .build()?;
     Ok(S3Client::new(config)?)
 }
@@ -290,10 +286,10 @@ async fn multipart_complete_abort_cleanup_and_managed_upload() -> TestResult {
     let managed_key = object_key(format!("{}/managed", namespace("multipart")));
     let managed_body = Bytes::from(vec![0x5a; PART_SIZE + 2_111]);
     client
-        .multipart_upload(ManagedMultipartUploadRequest::from_bytes(
-            managed_key.clone(),
-            managed_body.clone(),
-        ))
+        .multipart_upload(
+            ManagedMultipartUploadRequest::from_bytes(managed_key.clone(), managed_body.clone())
+                .with_options(MultipartOptions::new(PART_SIZE as u64, 2)?),
+        )
         .await?;
     let object = client
         .get_object(GetObjectRequest::new(managed_key.clone()))

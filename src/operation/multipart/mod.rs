@@ -13,7 +13,7 @@ pub use listing::{ListMultipartUploadsOutput, ListMultipartUploadsRequest, Multi
 pub(crate) use managed::MultipartUploadSource;
 pub use managed::{
     CreateMultipartUploadOutput, CreateMultipartUploadRequest, ManagedMultipartUploadRequest,
-    MultipartUpload,
+    MultipartOptions, MultipartUpload,
 };
 pub use part::{CompletedPart, PartNumber, UploadPartOutput, UploadPartRequest};
 

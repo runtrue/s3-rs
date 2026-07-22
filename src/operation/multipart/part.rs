@@ -2,6 +2,7 @@ use std::{fmt, num::NonZeroU16};
 
 use super::{MultipartError, UploadId};
 use crate::operation::{Checksum, ObjectKey, RequestIds};
+use crate::stream::ByteStream;
 
 /// A validated multipart part number in the range 1 through 10,000.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -25,17 +26,22 @@ impl PartNumber {
 }
 
 /// Request to upload one multipart part.
-pub struct UploadPartRequest<B> {
+pub struct UploadPartRequest {
     key: ObjectKey,
     upload_id: UploadId,
     part_number: PartNumber,
-    body: B,
+    body: ByteStream,
     checksum: Checksum,
 }
 
-impl<B> UploadPartRequest<B> {
+impl UploadPartRequest {
     /// Constructs an upload-part request from validated identifiers.
-    pub fn new(key: ObjectKey, upload_id: UploadId, part_number: PartNumber, body: B) -> Self {
+    pub fn new(
+        key: ObjectKey,
+        upload_id: UploadId,
+        part_number: PartNumber,
+        body: ByteStream,
+    ) -> Self {
         Self {
             key,
             upload_id,
@@ -61,12 +67,12 @@ impl<B> UploadPartRequest<B> {
     }
 
     /// Returns the part body.
-    pub const fn body(&self) -> &B {
+    pub const fn body(&self) -> &ByteStream {
         &self.body
     }
 
     /// Returns the part body mutably.
-    pub fn body_mut(&mut self) -> &mut B {
+    pub fn body_mut(&mut self) -> &mut ByteStream {
         &mut self.body
     }
 
@@ -82,12 +88,12 @@ impl<B> UploadPartRequest<B> {
     }
 
     /// Consumes the request and returns its body.
-    pub fn into_body(self) -> B {
+    pub fn into_body(self) -> ByteStream {
         self.body
     }
 }
 
-impl<B> fmt::Debug for UploadPartRequest<B> {
+impl fmt::Debug for UploadPartRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("UploadPartRequest")

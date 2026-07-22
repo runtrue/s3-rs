@@ -19,7 +19,9 @@
 
 Custom endpoint base paths and unusual valid object keys are encoded without treating keys as filesystem or browser paths. Repeated slashes and dot segments are preserved.
 
-Multipart promotion is not automatic. Applications choose `put_object` or `multipart_upload` explicitly and may use the configured `multipart_threshold` as part of that policy.
+Multipart promotion is not automatic. Applications choose `put_object` or
+`multipart_upload` explicitly and apply request-scoped `MultipartOptions` to
+managed uploads.
 
 ## Addressing and endpoints
 

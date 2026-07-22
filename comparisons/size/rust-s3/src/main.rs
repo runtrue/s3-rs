@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::hint::black_box;
+use std::pin::Pin;
 
 use s3::creds::Credentials;
 use s3::{Bucket, Region};
@@ -18,5 +20,10 @@ fn main() {
     };
     let bucket = Bucket::new("comparison-bucket", region, credentials)
         .expect("static comparison bucket must be valid");
-    black_box(bucket);
+    retain_poll_implementation(bucket.head_object("comparison-key"));
+}
+
+fn retain_poll_implementation<'a, T>(future: impl Future<Output = T> + 'a) {
+    let future: Pin<Box<dyn Future<Output = T> + 'a>> = Box::pin(future);
+    let _ = black_box(future);
 }

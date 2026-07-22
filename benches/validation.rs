@@ -5,13 +5,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use s3_wire::credentials::{Credentials, StaticCredentialsProvider};
 use s3_wire::fuzzing::{
     canonical_header_pairs, canonical_query_pairs, canonical_uri_path, consume_byte_stream,
-    multipart_concurrency, parse_error_xml, parse_listing_xml, parse_multipart_xml,
-    signing_output_size,
+    parse_error_xml, parse_listing_xml, parse_multipart_xml, signing_output_size,
 };
-use s3_wire::{S3Client, S3Config};
+use s3_wire::{Credentials, MultipartOptions, S3Client, S3Config, StaticCredentialsProvider};
 
 fn canonicalization(criterion: &mut Criterion) {
     let path = "/bucket/photos/2024/space + unicode-é.jpg";
@@ -101,15 +99,12 @@ fn streaming(criterion: &mut Criterion) {
     group.finish();
 }
 
-fn multipart_scheduling(criterion: &mut Criterion) {
-    criterion.bench_function("multipart_concurrency_budget", |bencher| {
+fn multipart_options(criterion: &mut Criterion) {
+    criterion.bench_function("multipart_options", |bencher| {
         bencher.iter(|| {
-            multipart_concurrency(
-                black_box(16),
-                black_box(128 * 1024 * 1024),
-                black_box(8 * 1024 * 1024),
-            )
-            .unwrap()
+            MultipartOptions::new(black_box(8 * 1024 * 1024), black_box(4))
+                .unwrap()
+                .maximum_buffered_bytes()
         });
     });
 }
@@ -121,6 +116,6 @@ criterion_group!(
     xml_parsing,
     client_construction,
     streaming,
-    multipart_scheduling
+    multipart_options
 );
 criterion_main!(benches);

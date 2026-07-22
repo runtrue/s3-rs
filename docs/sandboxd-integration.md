@@ -64,7 +64,10 @@ Listing is not transactional. A production collector needs an age or generation 
 
 ## Multipart cancellation and cleanup
 
-The adapter wraps managed multipart with a caller deadline and `CancellationToken`. Dropping the operation signals the client-owned task, which cancels outstanding parts and attempts `AbortMultipartUpload` after creation succeeds.
+The adapter places the caller deadline in request-scoped `MultipartOptions` and
+selects over the managed upload and a `CancellationToken`. Dropping the
+operation signals the client-owned task, which cancels outstanding parts and
+attempts `AbortMultipartUpload` after creation succeeds.
 
 A crash, lost credential, or network partition can still prevent abort. The example therefore includes a bounded stale-upload pass that:
 
@@ -83,7 +86,7 @@ The adapter accepts an injected `S3Client`. A sandboxd deployment can therefore 
 - path-style or virtual-hosted addressing;
 - region and bucket;
 - connection, attempt, operation, and idle-body deadlines;
-- response, pagination, multipart concurrency, and multipart byte limits; and
+- response and pagination limits plus derived multipart buffer bounds; and
 - an application-defined `CredentialsProvider`.
 
 Use HTTPS for remote endpoints. Enable local-test HTTP only for loopback or a trusted diagnostic environment. Prefer short-lived, least-privilege credentials over static process credentials.

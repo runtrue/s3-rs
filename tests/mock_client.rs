@@ -12,8 +12,9 @@ use futures_util::{StreamExt as _, stream};
 use http::StatusCode;
 use s3_wire::{
     ByteStream, Credentials, DeleteObjectRequest, Endpoint, ErrorCategory, GetObjectRequest,
-    ListObjectsV2Request, ManagedMultipartUploadRequest, ObjectKey, PutObjectRequest, RetryPolicy,
-    S3Client, S3Config, S3Error, StaticCredentialsProvider, TimeoutPhase,
+    ListObjectsV2Request, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey,
+    PutObjectRequest, RetryPolicy, S3Client, S3Config, S3Error, StaticCredentialsProvider,
+    TimeoutPhase,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -57,13 +58,15 @@ fn client_with(server: &MockServer, xml_limit: usize, idle_timeout: Duration) ->
         .idle_body_timeout(idle_timeout)
         .max_xml_response_size(xml_limit)
         .max_error_response_size(4096)
-        .multipart_part_size(MINIMUM_PART_SIZE as u64)
-        .multipart_threshold(MINIMUM_PART_SIZE as u64)
-        .multipart_concurrency(2)
-        .max_multipart_in_flight_bytes((2 * MINIMUM_PART_SIZE) as u64)
         .build()
         .expect("valid test config");
     S3Client::new(config).expect("construct test client")
+}
+
+fn managed_bytes(key: ObjectKey, bytes: Vec<u8>) -> ManagedMultipartUploadRequest {
+    ManagedMultipartUploadRequest::from_bytes(key, bytes).with_options(
+        MultipartOptions::new(MINIMUM_PART_SIZE as u64, 2).expect("valid test multipart options"),
+    )
 }
 
 fn create_multipart_reply(key: &str) -> Reply {
@@ -372,10 +375,7 @@ async fn managed_multipart_upload_sends_exact_parts_then_ordered_completion() {
     source.extend_from_slice(b"tail");
 
     let output = client(&server)
-        .multipart_upload(ManagedMultipartUploadRequest::from_bytes(
-            key("managed"),
-            source,
-        ))
+        .multipart_upload(managed_bytes(key("managed"), source))
         .await
         .expect("managed multipart upload succeeds");
 
@@ -419,10 +419,7 @@ async fn managed_multipart_part_failure_aborts_without_completing() {
     let source = vec![b'x'; MINIMUM_PART_SIZE + 1];
 
     let error = client(&server)
-        .multipart_upload(ManagedMultipartUploadRequest::from_bytes(
-            key("part-fails"),
-            source,
-        ))
+        .multipart_upload(managed_bytes(key("part-fails"), source))
         .await
         .expect_err("selected part failure fails the upload");
 
@@ -453,10 +450,7 @@ async fn managed_multipart_preserves_primary_error_when_abort_fails() {
     let source = vec![b'x'; MINIMUM_PART_SIZE + 1];
 
     let error = client(&server)
-        .multipart_upload(ManagedMultipartUploadRequest::from_bytes(
-            key("abort-fails"),
-            source,
-        ))
+        .multipart_upload(managed_bytes(key("abort-fails"), source))
         .await
         .expect_err("part and cleanup both fail");
 
@@ -489,10 +483,7 @@ async fn cancelling_managed_multipart_eventually_aborts_the_upload() {
     let source = vec![b'x'; MINIMUM_PART_SIZE + 1];
     let upload = tokio::spawn(async move {
         upload_client
-            .multipart_upload(ManagedMultipartUploadRequest::from_bytes(
-                key("cancelled"),
-                source,
-            ))
+            .multipart_upload(managed_bytes(key("cancelled"), source))
             .await
     });
     wait_for_request(&server, |request| request.method == "PUT").await;
@@ -506,4 +497,102 @@ async fn cancelling_managed_multipart_eventually_aborts_the_upload() {
     assert!(!requests.iter().any(|request| {
         request.method == "POST" && request.target.contains("uploadId=upload-123")
     }));
+}
+
+#[tokio::test]
+async fn managed_multipart_transfer_deadline_is_end_to_end_and_preserves_cleanup_time() {
+    let server = MockServer::start(|_, request| match request.method.as_str() {
+        "POST" if request.target.ends_with("?uploads=") => create_multipart_reply("deadline"),
+        "PUT" => Reply::Stall,
+        "DELETE" => Reply::empty(StatusCode::NO_CONTENT),
+        _ => Reply::empty(StatusCode::INTERNAL_SERVER_ERROR),
+    })
+    .await;
+    let options = MultipartOptions::new(MINIMUM_PART_SIZE as u64, 1)
+        .unwrap()
+        .with_transfer_timeout(Duration::from_millis(50))
+        .unwrap()
+        .with_cleanup_timeout(Duration::from_secs(1))
+        .unwrap();
+    let request =
+        managed_bytes(key("deadline"), vec![b'x'; MINIMUM_PART_SIZE]).with_options(options);
+
+    let error = client(&server)
+        .multipart_upload(request)
+        .await
+        .expect_err("managed transfer deadline expires");
+
+    assert_eq!(error.category(), ErrorCategory::Timeout);
+    assert_eq!(error.timeout_phase(), Some(TimeoutPhase::Operation));
+    assert!(
+        server
+            .requests()
+            .await
+            .iter()
+            .any(|request| request.method == "DELETE")
+    );
+}
+
+#[tokio::test]
+async fn upload_part_success_bodies_are_drained_under_a_small_bound() {
+    let server = MockServer::start(|_, request| match request.method.as_str() {
+        "POST" if request.target.ends_with("?uploads=") => create_multipart_reply("body-bound"),
+        "PUT" => Reply::Full {
+            status: StatusCode::OK,
+            headers: vec![("etag".to_owned(), "\"part\"".to_owned())],
+            body: vec![b'x'; 8 * 1024 + 1],
+        },
+        "DELETE" => Reply::empty(StatusCode::NO_CONTENT),
+        _ => Reply::empty(StatusCode::INTERNAL_SERVER_ERROR),
+    })
+    .await;
+
+    let error = client(&server)
+        .multipart_upload(managed_bytes(
+            key("body-bound"),
+            vec![b'x'; MINIMUM_PART_SIZE],
+        ))
+        .await
+        .expect_err("oversized successful part response is rejected");
+
+    assert_eq!(error.category(), ErrorCategory::OversizedResponse);
+    assert!(
+        server
+            .requests()
+            .await
+            .iter()
+            .any(|request| request.method == "DELETE")
+    );
+}
+
+#[tokio::test]
+async fn upload_part_success_body_is_drained_before_headers_are_validated() {
+    let server = MockServer::start(|_, request| match request.method.as_str() {
+        "POST" if request.target.ends_with("?uploads=") => create_multipart_reply("drain-first"),
+        "PUT" => Reply::Full {
+            status: StatusCode::OK,
+            headers: Vec::new(),
+            body: vec![b'x'; 8 * 1024 + 1],
+        },
+        "DELETE" => Reply::empty(StatusCode::NO_CONTENT),
+        _ => Reply::empty(StatusCode::INTERNAL_SERVER_ERROR),
+    })
+    .await;
+
+    let error = client(&server)
+        .multipart_upload(managed_bytes(
+            key("drain-first"),
+            vec![b'x'; MINIMUM_PART_SIZE],
+        ))
+        .await
+        .expect_err("response body bound is enforced before malformed headers are reported");
+
+    assert_eq!(error.category(), ErrorCategory::OversizedResponse);
+    assert!(
+        server
+            .requests()
+            .await
+            .iter()
+            .any(|request| request.method == "DELETE")
+    );
 }

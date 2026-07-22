@@ -1,13 +1,14 @@
 use http::header::CONTENT_TYPE;
 use http::{HeaderMap, HeaderName, HeaderValue};
 
+use crate::client::request::insert_header;
 use crate::error::S3Error;
 use crate::operation::{Checksum, ChecksumAlgorithm, CreateMultipartUploadRequest, RequestIds};
 
 pub(super) fn create_headers(request: &CreateMultipartUploadRequest) -> Result<HeaderMap, S3Error> {
     let mut headers = HeaderMap::new();
     if let Some(content_type) = &request.content_type {
-        insert_header(&mut headers, &CONTENT_TYPE, content_type)?;
+        insert_header(&mut headers, CONTENT_TYPE, content_type)?;
     }
     if let Some(algorithm) = request.checksum_algorithm {
         headers.insert(
@@ -23,7 +24,7 @@ pub(super) fn create_headers(request: &CreateMultipartUploadRequest) -> Result<H
         }
         let name = HeaderName::from_bytes(format!("x-amz-meta-{name}").as_bytes())
             .map_err(|_| S3Error::configuration("user metadata name is not a valid HTTP header"))?;
-        insert_header(&mut headers, &name, value)?;
+        insert_header(&mut headers, name, value)?;
     }
     Ok(headers)
 }
@@ -87,7 +88,7 @@ fn insert_checksum(
             "checksum is not valid standard base64 for its algorithm",
         ));
     }
-    insert_header(headers, &HeaderName::from_static(name), value)
+    insert_header(headers, HeaderName::from_static(name), value)
 }
 
 fn valid_base64_digest(value: &str, digest_length: usize) -> bool {
@@ -131,13 +132,6 @@ fn valid_base64_digest(value: &str, digest_length: usize) -> bool {
         2 => last.trailing_zeros() >= 4,
         _ => unreachable!(),
     }
-}
-
-fn insert_header(headers: &mut HeaderMap, name: &HeaderName, value: &str) -> Result<(), S3Error> {
-    let value = HeaderValue::from_str(value)
-        .map_err(|_| S3Error::configuration("request header value is invalid"))?;
-    headers.insert(name.clone(), value);
-    Ok(())
 }
 
 pub(super) fn response_checksums(headers: &HeaderMap) -> Result<Checksum, S3Error> {
