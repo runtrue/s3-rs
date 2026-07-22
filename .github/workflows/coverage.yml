@@ -14,6 +14,7 @@ concurrency:
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  MINIMUM_LINE_COVERAGE: "75"
   RUST_VERSION: 1.97.1
 
 jobs:
@@ -52,6 +53,18 @@ jobs:
           cargo llvm-cov report --json --summary-only --output-path coverage/summary.json
           cargo llvm-cov report --text --output-path coverage/report.txt
           cargo llvm-cov report --html --output-dir coverage/html
+      - name: Enforce line coverage floor
+        run: |
+          line_coverage=$(jq -r '.data[0].totals.lines.percent' coverage/summary.json)
+          printf 'Line coverage: %.2f%% (required: %.2f%%)\n' \
+            "$line_coverage" "$MINIMUM_LINE_COVERAGE"
+          jq --exit-status --argjson minimum "$MINIMUM_LINE_COVERAGE" \
+            '.data[0].totals.lines.percent >= $minimum' coverage/summary.json >/dev/null
+          {
+            printf '## Coverage\n\n'
+            printf -- '- Line coverage: %.2f%%\n' "$line_coverage"
+            printf -- '- Required minimum: %.2f%%\n' "$MINIMUM_LINE_COVERAGE"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

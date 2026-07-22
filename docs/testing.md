@@ -22,6 +22,10 @@ cargo publish --locked --dry-run
 
 The publish dry run validates the package without uploading it. Do not substitute an actual `cargo publish` during routine validation.
 
+CI also compiles every independently locked crate managed by Dependabot: the fuzz targets,
+performance harness, and three size-comparison crates. The coverage check enforces a 75% line
+coverage floor; its report and HTML output remain available as workflow artifacts.
+
 ## Test layers
 
 | Layer | Location | Purpose |
@@ -53,6 +57,17 @@ Unit and in-process integration tests exercise:
 - attempts to forward credentials through redirects.
 
 These tests require no external service and should be the first place to add a protocol regression.
+
+## Automated dependency updates
+
+Dependabot checks Cargo and GitHub Actions dependencies every Monday. A Dependabot pull request is
+approved and squash-merged only after every branch-protection check passes for its exact head
+commit. A new commit cancels the pending approval run and must pass the complete gate again.
+
+The required gate includes formatting, Clippy, rustdoc, all targets and features, auxiliary crates,
+MinIO, RustFS, SeaweedFS, package and semver validation, dependency policy and review, RustSec,
+secret scanning, and the enforced coverage floor. Major updates use the same gate; maintainers can
+disable auto-merge on an individual pull request when a migration needs manual review.
 
 ## S3 endpoint integration
 
