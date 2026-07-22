@@ -1,0 +1,56 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approve-and-merge:
+    name: Approve and merge passing updates
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      TESTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Wait for every required check
+        run: |
+          for attempt in $(seq 1 12); do
+            if gh pr checks "$PR_URL" --required --watch --fail-fast --interval 10; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "Required checks did not all pass" >&2
+              exit 1
+            fi
+            echo "Required checks are not registered yet; retrying"
+            sleep 10
+          done
+      - name: Verify the tested commit is still current
+        run: |
+          current_head_sha=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
+          test "$current_head_sha" = "$TESTED_HEAD_SHA"
+      - name: Approve tested update
+        run: |
+          gh pr review "$PR_URL" --approve \
+            --body "All required checks passed for $TESTED_HEAD_SHA."
+      - name: Merge the approved commit
+        run: |
+          gh pr merge "$PR_URL" --auto --squash --delete-branch \
+            --match-head-commit "$TESTED_HEAD_SHA"
