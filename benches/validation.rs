@@ -49,7 +49,7 @@ fn signing(criterion: &mut Criterion) {
 
 fn xml_parsing(criterion: &mut Criterion) {
     let error = br#"<Error><Code>SlowDown</Code><Message>retry</Message><RequestId>request</RequestId><HostId>host</HostId><Region>us-east-1</Region></Error>"#;
-    let listing = br#"<ListBucketResult><IsTruncated>true</IsTruncated><Contents><Key>a/b</Key><LastModified>2024-03-12T10:15:30Z</LastModified><ETag>&quot;etag&quot;</ETag><Size>1048576</Size></Contents><CommonPrefixes><Prefix>a/</Prefix></CommonPrefixes><NextContinuationToken>opaque+/=</NextContinuationToken></ListBucketResult>"#;
+    let listing = br#"<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>true</IsTruncated><Contents><Key>a%2Fb</Key><LastModified>2024-03-12T10:15:30Z</LastModified><ETag>&quot;etag&quot;</ETag><Size>1048576</Size></Contents><CommonPrefixes><Prefix>a%2F</Prefix></CommonPrefixes><NextContinuationToken>opaque+/=</NextContinuationToken></ListBucketResult>"#;
     let multipart = br#"<ListMultipartUploadsResult><IsTruncated>true</IsTruncated><Upload><Key>a/b</Key><UploadId>opaque+/=</UploadId><Initiated>2024-03-12T10:15:30Z</Initiated></Upload><NextKeyMarker>a/b</NextKeyMarker><NextUploadIdMarker>next+/=</NextUploadIdMarker></ListMultipartUploadsResult>"#;
 
     criterion.bench_function("parse_s3_error_xml", |bencher| {

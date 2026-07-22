@@ -101,9 +101,29 @@ impl RetryPolicy {
         elapsed: Duration,
         retry_after: Option<Duration>,
     ) -> Option<Duration> {
+        self.delay_for(
+            RetryClassification::Retryable,
+            attempts_completed,
+            elapsed,
+            retry_after,
+        )
+    }
+
+    /// Computes a classification-aware full-jitter delay.
+    ///
+    /// Standard AWS retry behavior uses a one-second backoff base for
+    /// throttling and a shorter base for other transient failures.
+    pub fn delay_for(
+        &self,
+        classification: RetryClassification,
+        attempts_completed: u32,
+        elapsed: Duration,
+        retry_after: Option<Duration>,
+    ) -> Option<Duration> {
         if attempts_completed == 0
             || attempts_completed >= self.max_attempts
             || elapsed >= self.max_elapsed
+            || classification == RetryClassification::Never
         {
             return None;
         }
@@ -113,13 +133,27 @@ impl RetryPolicy {
             return (delay <= remaining).then_some(delay);
         }
 
-        let exponent = attempts_completed.saturating_sub(1).min(31);
-        let multiplier = 1_u32 << exponent;
-        let ceiling = self.base_delay.saturating_mul(multiplier);
-        let ceiling = ceiling.min(self.max_delay).min(remaining);
+        let ceiling = self
+            .delay_ceiling(classification, attempts_completed)
+            .min(remaining);
         let ceiling_nanos = u64::try_from(ceiling.as_nanos()).unwrap_or(u64::MAX);
         let nanos = fastrand::u64(0..=ceiling_nanos);
         Some(Duration::from_nanos(nanos))
+    }
+
+    fn delay_ceiling(
+        &self,
+        classification: RetryClassification,
+        attempts_completed: u32,
+    ) -> Duration {
+        let base = if classification == RetryClassification::Throttled {
+            self.base_delay.max(Duration::from_secs(1))
+        } else {
+            self.base_delay
+        };
+        let exponent = attempts_completed.saturating_sub(1).min(31);
+        let multiplier = 1_u32 << exponent;
+        base.saturating_mul(multiplier).min(self.max_delay)
     }
 }
 
@@ -175,5 +209,25 @@ mod tests {
                 .is_none()
         );
         assert!(policy.delay(10, Duration::from_secs(9), None).is_none());
+    }
+
+    #[test]
+    fn throttling_uses_the_standard_longer_backoff_base() {
+        let policy = RetryPolicy::new(
+            4,
+            Duration::from_millis(100),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+
+        assert_eq!(
+            policy.delay_ceiling(RetryClassification::Retryable, 1),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            policy.delay_ceiling(RetryClassification::Throttled, 1),
+            Duration::from_secs(1)
+        );
     }
 }

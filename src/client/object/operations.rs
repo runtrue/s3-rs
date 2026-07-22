@@ -2,12 +2,12 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::TryStreamExt;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, RANGE};
-use http::{HeaderMap, HeaderName, Method, StatusCode};
+use http::{HeaderMap, HeaderName, Method};
 use http_body_util::BodyExt;
 use md5::{Digest as _, Md5};
 
 use super::super::S3Client;
-use super::super::request::{protocol_error, service_error};
+use super::super::request::protocol_error;
 use super::headers::{
     copy_source_header, insert_conditions, insert_header, insert_optional_header,
     insert_upload_checksum, insert_user_metadata, merge_checksum, optional_query,
@@ -16,12 +16,13 @@ use super::headers::{
 };
 use crate::error::S3Error;
 use crate::operation::{
-    CopyObjectOutput, CopyObjectRequest, DeleteObjectOutput, DeleteObjectRequest,
-    DeleteObjectsOutput, DeleteObjectsRequest, GetObjectOutput, GetObjectRequest, HeadObjectOutput,
-    HeadObjectRequest, PutObjectOutput, PutObjectRequest,
+    CopyMetadataDirective, CopyObjectOutput, CopyObjectRequest, DeleteObjectOutput,
+    DeleteObjectRequest, DeleteObjectsOutput, DeleteObjectsRequest, GetObjectOutput,
+    GetObjectRequest, HeadObjectOutput, HeadObjectRequest, PutObjectOutput, PutObjectRequest,
 };
 use crate::protocol::{
-    CopyObjectResponse, parse_copy_object, parse_delete_objects, serialize_delete_objects,
+    CopyObjectResponse, ParsedS3Error, ProtocolError, parse_copy_object, parse_delete_objects,
+    serialize_delete_objects,
 };
 use crate::stream::{ByteStream, ResponseStream};
 
@@ -246,39 +247,56 @@ impl S3Client {
             &request.source_conditions,
             "x-amz-copy-source-",
         )?;
-        let replaces_metadata = request.content_type.is_some() || request.user_metadata.is_some();
-        insert_optional_header(&mut headers, CONTENT_TYPE, request.content_type.as_deref())?;
-        if let Some(metadata) = &request.user_metadata {
-            insert_user_metadata(&mut headers, metadata)?;
-        }
-        if replaces_metadata {
-            insert_header(
-                &mut headers,
-                HeaderName::from_static("x-amz-metadata-directive"),
-                "REPLACE",
-            )?;
+        match &request.metadata {
+            CopyMetadataDirective::Copy => {}
+            CopyMetadataDirective::Replace {
+                content_type,
+                user_metadata,
+            } => {
+                insert_optional_header(&mut headers, CONTENT_TYPE, content_type.as_deref())?;
+                insert_user_metadata(&mut headers, user_metadata)?;
+                insert_header(
+                    &mut headers,
+                    HeaderName::from_static("x-amz-metadata-directive"),
+                    "REPLACE",
+                )?;
+            }
         }
         let target = self.operation_target(Some(request.destination.as_str()))?;
         let deadline = self.deadline();
-        let response = self
-            .send_signed(Method::PUT, target, &[], headers, None, &deadline)
-            .await?;
-        let response_headers = response.headers().clone();
         let maximum = self.inner.config.max_xml_response_size();
-        let body = self.collect_response(response, maximum, &deadline).await?;
-        let mut output = match parse_copy_object(&body, maximum).map_err(protocol_error)? {
+        let response = self
+            .send_signed_collected_xml(
+                Method::PUT,
+                target,
+                &[],
+                headers,
+                None,
+                &deadline,
+                maximum,
+                copy_embedded_error,
+            )
+            .await?;
+        let response_headers = response.headers;
+        let mut output = match parse_copy_object(&response.body, maximum).map_err(protocol_error)? {
             CopyObjectResponse::Complete(output) => output,
-            CopyObjectResponse::EmbeddedError(parsed) => {
-                return Err(service_error(
-                    StatusCode::OK,
-                    &response_headers,
-                    Some(parsed),
-                ));
+            CopyObjectResponse::EmbeddedError(_) => {
+                unreachable!("embedded copy errors are handled by request execution")
             }
         };
         output.version_id = response_header(&response_headers, "x-amz-version-id")?;
         output.request_ids = parse_request_ids(&response_headers)?;
         merge_checksum(&mut output.checksum, parse_checksum(&response_headers)?);
         Ok(output)
+    }
+}
+
+fn copy_embedded_error(
+    body: &[u8],
+    maximum: usize,
+) -> Result<Option<ParsedS3Error>, ProtocolError> {
+    match parse_copy_object(body, maximum)? {
+        CopyObjectResponse::Complete(_) => Ok(None),
+        CopyObjectResponse::EmbeddedError(error) => Ok(Some(error)),
     }
 }

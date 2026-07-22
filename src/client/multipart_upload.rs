@@ -144,6 +144,7 @@ async fn run_multipart_upload(
     let mut create = CreateMultipartUploadRequest::new(request.key.clone());
     create.content_type = request.content_type;
     create.user_metadata = request.user_metadata;
+    create.checksum_algorithm = request.checksum_algorithm;
     // Once creation starts, allow it to finish even after cancellation so a
     // successful response cannot be discarded together with the upload ID
     // needed for cleanup.
@@ -159,6 +160,7 @@ async fn run_multipart_upload(
             upload_id: upload_id.clone(),
             source: Arc::new(source),
             part_size,
+            checksum_algorithm: request.checksum_algorithm,
             deadline: transfer_deadline,
         },
         part_count,
@@ -221,6 +223,7 @@ struct PartUploadContext {
     upload_id: UploadId,
     source: Arc<PreparedMultipartSource>,
     part_size: u64,
+    checksum_algorithm: Option<crate::operation::ChecksumAlgorithm>,
     deadline: OperationDeadline,
 }
 
@@ -342,6 +345,16 @@ async fn upload_one_part(
         .await?;
     let number = PartNumber::new(part_number)
         .ok_or_else(|| S3Error::integrity("generated multipart part number is invalid"))?;
+    let checksum = match context.checksum_algorithm {
+        Some(algorithm) => tokio::time::timeout_at(
+            context.deadline.instant(),
+            crate::operation::Checksum::calculate_cooperatively(algorithm, &body),
+        )
+        .await
+        .map_err(|_| transfer_timeout())?
+        .map_err(|error| S3Error::unsupported(error.to_string()))?,
+        None => crate::operation::Checksum::default(),
+    };
     let output = context
         .client
         .upload_part_with_deadline(
@@ -350,7 +363,8 @@ async fn upload_one_part(
                 context.upload_id,
                 number,
                 ByteStream::from_bytes(body),
-            ),
+            )
+            .with_checksum(checksum),
             &context.deadline,
         )
         .await?;

@@ -6,7 +6,7 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use super::{CompletedPart, MultipartError, UploadId};
-use crate::operation::{ChecksumAlgorithm, ObjectKey, RequestIds};
+use crate::operation::{ChecksumAlgorithm, ChecksumType, ObjectKey, RequestIds};
 
 const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
@@ -146,6 +146,8 @@ pub struct CreateMultipartUploadRequest {
     pub user_metadata: BTreeMap<String, String>,
     /// Checksum algorithm applied to uploaded parts.
     pub checksum_algorithm: Option<ChecksumAlgorithm>,
+    /// How S3 should derive the completed object's checksum from its parts.
+    pub checksum_type: Option<ChecksumType>,
 }
 
 impl CreateMultipartUploadRequest {
@@ -156,6 +158,7 @@ impl CreateMultipartUploadRequest {
             content_type: None,
             user_metadata: BTreeMap::new(),
             checksum_algorithm: None,
+            checksum_type: None,
         }
     }
 }
@@ -171,6 +174,8 @@ pub struct CreateMultipartUploadOutput {
     upload_id: UploadId,
     /// Checksum algorithm selected by the service.
     pub checksum_algorithm: Option<String>,
+    /// Checksum aggregation selected by S3.
+    pub checksum_type: Option<ChecksumType>,
     /// Service request identifiers.
     pub request_ids: RequestIds,
 }
@@ -181,12 +186,14 @@ impl CreateMultipartUploadOutput {
         key: ObjectKey,
         upload_id: UploadId,
         checksum_algorithm: Option<String>,
+        checksum_type: Option<ChecksumType>,
     ) -> Self {
         Self {
             bucket,
             key,
             upload_id,
             checksum_algorithm,
+            checksum_type,
             request_ids: RequestIds::default(),
         }
     }
@@ -222,6 +229,7 @@ pub struct ManagedMultipartUploadRequest {
     pub(crate) content_type: Option<String>,
     pub(crate) user_metadata: BTreeMap<String, String>,
     pub(crate) options: MultipartOptions,
+    pub(crate) checksum_algorithm: Option<ChecksumAlgorithm>,
 }
 
 impl ManagedMultipartUploadRequest {
@@ -233,6 +241,7 @@ impl ManagedMultipartUploadRequest {
             content_type: None,
             user_metadata: BTreeMap::new(),
             options: MultipartOptions::default(),
+            checksum_algorithm: None,
         }
     }
 
@@ -247,6 +256,7 @@ impl ManagedMultipartUploadRequest {
             content_type: None,
             user_metadata: BTreeMap::new(),
             options: MultipartOptions::default(),
+            checksum_algorithm: None,
         }
     }
 
@@ -266,6 +276,23 @@ impl ManagedMultipartUploadRequest {
     pub fn with_options(mut self, options: MultipartOptions) -> Self {
         self.options = options;
         self
+    }
+
+    /// Calculates and sends this checksum for every uploaded part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when local calculation is unavailable for the selected
+    /// algorithm. SHA-1 may still be supplied through primitive multipart APIs.
+    pub fn with_checksum_algorithm(
+        mut self,
+        algorithm: ChecksumAlgorithm,
+    ) -> Result<Self, crate::operation::ChecksumCalculationError> {
+        if algorithm == ChecksumAlgorithm::Sha1 {
+            return Err(crate::operation::ChecksumCalculationError { algorithm });
+        }
+        self.checksum_algorithm = Some(algorithm);
+        Ok(self)
     }
 
     /// Returns this upload's resource and time bounds.
@@ -293,6 +320,7 @@ impl fmt::Debug for ManagedMultipartUploadRequest {
             )
             .field("content_type", &self.content_type)
             .field("options", &self.options)
+            .field("checksum_algorithm", &self.checksum_algorithm)
             .field(
                 "user_metadata_names",
                 &self.user_metadata.keys().collect::<Vec<_>>(),

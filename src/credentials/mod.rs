@@ -12,6 +12,9 @@ use tokio::sync::Mutex;
 
 use crate::error::{ErrorCategory, RetryClassification, S3Error};
 
+#[cfg(feature = "aws-credentials")]
+use aws_credential_types::provider::{ProvideCredentials as _, SharedCredentialsProvider};
+
 /// AWS-compatible credentials and optional expiration.
 ///
 /// Secret values are zeroized on drop. Its `Debug` implementation redacts all
@@ -112,6 +115,112 @@ impl fmt::Debug for Credentials {
 pub trait CredentialsProvider: Send + Sync {
     /// Resolves credentials for a request.
     async fn provide_credentials(&self) -> Result<Credentials, S3Error>;
+}
+
+/// Adapter for AWS's standard renewable credential provider chain.
+///
+/// This provider is available only with the `aws-credentials` feature so the
+/// default `s3-wire` dependency graph remains small. The chain covers shared
+/// profiles, environment credentials, web identity, ECS container credentials,
+/// EC2 IMDSv2, credential processes, and assume-role profiles.
+#[cfg(feature = "aws-credentials")]
+#[derive(Clone)]
+pub struct AwsDefaultCredentialsProvider {
+    inner: SharedCredentialsProvider,
+}
+
+#[cfg(feature = "aws-credentials")]
+impl AwsDefaultCredentialsProvider {
+    /// Builds the standard AWS credential chain.
+    pub async fn new() -> Self {
+        let chain = aws_config::default_provider::credentials::DefaultCredentialsChain::builder()
+            .build()
+            .await;
+        Self {
+            inner: SharedCredentialsProvider::new(chain),
+        }
+    }
+
+    /// Builds the standard AWS credential chain for a named shared profile.
+    pub async fn for_profile(profile: &str) -> Result<Self, S3Error> {
+        if profile.is_empty() {
+            return Err(S3Error::configuration("AWS profile name must not be empty"));
+        }
+        let chain = aws_config::default_provider::credentials::DefaultCredentialsChain::builder()
+            .profile_name(profile)
+            .build()
+            .await;
+        Ok(Self {
+            inner: SharedCredentialsProvider::new(chain),
+        })
+    }
+}
+
+#[cfg(feature = "aws-credentials")]
+impl fmt::Debug for AwsDefaultCredentialsProvider {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AwsDefaultCredentialsProvider")
+            .field("inner", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[cfg(feature = "aws-credentials")]
+#[async_trait]
+impl CredentialsProvider for AwsDefaultCredentialsProvider {
+    async fn provide_credentials(&self) -> Result<Credentials, S3Error> {
+        let credentials = self.inner.provide_credentials().await.map_err(|error| {
+            S3Error::new(
+                ErrorCategory::Authentication,
+                "AWS default credential chain did not resolve credentials",
+                RetryClassification::Never,
+            )
+            .with_source(error)
+        })?;
+        Credentials::with_expiration(
+            credentials.access_key_id(),
+            credentials.secret_access_key(),
+            credentials.session_token().map(ToOwned::to_owned),
+            credentials.expiry().map(OffsetDateTime::from),
+        )
+    }
+}
+
+/// Resolves a signing region through AWS's standard environment, shared
+/// profile, and IMDS region chain.
+///
+/// # Errors
+///
+/// Returns an error when the chain does not resolve a region.
+#[cfg(feature = "aws-credentials")]
+pub async fn resolve_default_aws_region() -> Result<String, S3Error> {
+    aws_config::default_provider::region::DefaultRegionChain::builder()
+        .build()
+        .region()
+        .await
+        .map(|region| region.as_ref().to_owned())
+        .ok_or_else(|| S3Error::configuration("AWS default region chain did not resolve a region"))
+}
+
+/// Resolves a signing region through AWS's standard chain for a named profile.
+///
+/// # Errors
+///
+/// Returns an error for an empty profile or when the chain does not resolve a
+/// region.
+#[cfg(feature = "aws-credentials")]
+pub async fn resolve_aws_region_for_profile(profile: &str) -> Result<String, S3Error> {
+    if profile.is_empty() {
+        return Err(S3Error::configuration("AWS profile name must not be empty"));
+    }
+    aws_config::default_provider::region::DefaultRegionChain::builder()
+        .profile_name(profile)
+        .build()
+        .region()
+        .await
+        .map(|region| region.as_ref().to_owned())
+        .ok_or_else(|| S3Error::configuration("AWS profile did not resolve a region"))
 }
 
 /// Provider backed by an immutable credential value.

@@ -123,6 +123,7 @@ jobs:
       - name: Check size comparison crates
         run: |
           cargo check --locked --all-targets --manifest-path comparisons/size/s3-wire/Cargo.toml
+          cargo check --locked --all-targets --manifest-path comparisons/size/s3-wire-http2/Cargo.toml
           cargo check --locked --all-targets --manifest-path comparisons/size/rust-s3/Cargo.toml
           cargo check --locked --all-targets --manifest-path comparisons/size/aws-sdk-s3/Cargo.toml
 
@@ -160,7 +161,41 @@ jobs:
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-s3-${{ matrix.provider }}-
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
       - name: Run pinned ${{ matrix.provider }} compatibility suite
-        run: ./scripts/test-s3-compat.sh "${{ matrix.provider }}"
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          PROVIDER_LABEL: ${{ matrix.label }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/s3-compat"
+          set +e
+          ./scripts/test-s3-compat.sh "$PROVIDER"
+          status=$?
+          set -e
+          if test "$status" -eq 0; then result=passed; else result=failed; fi
+          jq -n \
+            --arg provider "$PROVIDER" \
+            --arg result "$result" \
+            --arg commit "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            "{schema_version: 1, provider: \$provider, result: \$result,
+              commit: \$commit, run_id: \$run_id}" \
+            > "$RUNNER_TEMP/s3-compat/result.json"
+          {
+            printf '# %s compatibility\n\n' "$PROVIDER_LABEL"
+            printf -- '- Result: %s\n- Commit: %s\n- Run: %s\n' \
+              "$result" "$GITHUB_SHA" "$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/s3-compat/result.md"
+          exit "$status"
+      - name: Add provider result to summary
+        if: always()
+        run: test ! -f "$RUNNER_TEMP/s3-compat/result.md" || cat "$RUNNER_TEMP/s3-compat/result.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload redacted provider report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: s3-compat-${{ matrix.provider }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/s3-compat
+          if-no-files-found: warn
+          retention-days: 14
 
   package:
     name: Package and publish dry-run
@@ -181,12 +216,20 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
+            ~/.cargo/bin/cargo-semver-checks
             target
-          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-semver-0.49.0-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-
+            cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-package-semver-0.49.0-
             cargo-${{ runner.os }}-${{ env.RUST_VERSION }}-
+      - name: Install semantic-version checker
+        run: |
+          if ! cargo semver-checks --version 2>/dev/null | grep -Fq '0.49.0'; then
+            cargo install cargo-semver-checks --locked --version 0.49.0
+          fi
       - name: Build package archive
         run: cargo package --locked
+      - name: Check public API compatibility
+        run: cargo semver-checks check-release --all-features
       - name: Validate publish without uploading
         run: cargo publish --locked --dry-run

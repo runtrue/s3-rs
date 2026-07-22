@@ -1,6 +1,8 @@
 # Contributing
 
 Contributions should preserve the crate's explicit resource bounds, replay rules, and secret-redaction guarantees.
+Participation is governed by the [code of conduct](CODE_OF_CONDUCT.md). Support
+and compatibility reports should follow [SUPPORT.md](SUPPORT.md).
 
 ## Development environment
 
@@ -13,6 +15,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets
 cargo test --locked --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+cargo semver-checks check-release --all-features
 cargo package --locked
 cargo publish --locked --dry-run
 ```
@@ -42,3 +45,8 @@ and must use a dedicated bucket or test prefix with least-privilege, short-lived
 ## Pull requests
 
 Keep commits focused and describe externally visible behavior, tests, security effects, and resource-bound changes. Do not include credentials or signed URLs in commits, issue text, logs, fixtures, screenshots, or workflow artifacts.
+
+Public API compatibility is checked against the latest published crate. During
+the pre-1.0 line, an intentional breaking change still requires migration notes
+and the version change implied by Cargo's compatibility rules. The MSRV may be
+raised in a minor release, never silently in a patch release.

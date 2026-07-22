@@ -1,7 +1,6 @@
 use http::header::{CONTENT_TYPE, ETAG};
 use http::{HeaderMap, HeaderValue, Method};
 
-use super::errors::embedded_complete_error;
 use super::headers::{
     checksum_headers, create_headers, optional_header, request_ids, required_header,
     response_checksums,
@@ -16,8 +15,9 @@ use crate::operation::{
     ListMultipartUploadsRequest, RequestIds, UploadPartOutput, UploadPartRequest,
 };
 use crate::protocol::{
-    CompleteMultipartResponse, parse_complete_multipart_upload, parse_create_multipart_upload,
-    parse_list_multipart_uploads, serialize_complete_multipart_upload,
+    CompleteMultipartResponse, ParsedS3Error, ProtocolError, parse_complete_multipart_upload,
+    parse_create_multipart_upload, parse_list_multipart_uploads,
+    serialize_complete_multipart_upload,
 };
 use crate::stream::ByteStream;
 
@@ -137,16 +137,23 @@ impl S3Client {
         let body = deadline.prepare_body(ByteStream::from(document)).await?;
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/xml"));
+        let maximum = self.config().max_xml_response_size();
         let response = self
-            .send_signed(Method::POST, target, &query, headers, Some(&body), deadline)
+            .send_signed_collected_xml(
+                Method::POST,
+                target,
+                &query,
+                headers,
+                Some(&body),
+                deadline,
+                maximum,
+                complete_multipart_embedded_error,
+            )
             .await?;
-        let response_headers = response.headers().clone();
+        let response_headers = response.headers;
         let request_ids = request_ids(&response_headers);
         let version_id = optional_header(&response_headers, "x-amz-version-id")?;
-        let body = self
-            .collect_response(response, self.config().max_xml_response_size(), deadline)
-            .await?;
-        match parse_complete_multipart_upload(&body, self.config().max_xml_response_size())
+        match parse_complete_multipart_upload(&response.body, maximum)
             .map_err(crate::client::request::protocol_error)?
         {
             CompleteMultipartResponse::Complete(mut output) => {
@@ -154,8 +161,8 @@ impl S3Client {
                 output.request_ids = request_ids;
                 Ok(output)
             }
-            CompleteMultipartResponse::EmbeddedError(parsed) => {
-                Err(embedded_complete_error(&response_headers, parsed))
+            CompleteMultipartResponse::EmbeddedError(_) => {
+                unreachable!("embedded completion errors are handled by request execution")
             }
         }
     }
@@ -207,9 +214,18 @@ impl S3Client {
         &self,
         request: ListMultipartUploadsRequest,
     ) -> Result<ListMultipartUploadsOutput, S3Error> {
-        let target = self.operation_target(None)?;
-        let query = list_query(&request)?;
         let deadline = self.deadline();
+        self.list_multipart_uploads_with_deadline(&request, &deadline)
+            .await
+    }
+
+    pub(in crate::client) async fn list_multipart_uploads_with_deadline(
+        &self,
+        request: &ListMultipartUploadsRequest,
+        deadline: &OperationDeadline,
+    ) -> Result<ListMultipartUploadsOutput, S3Error> {
+        let target = self.operation_target(None)?;
+        let query = list_query(request)?;
         let response = self
             .send_signed(
                 Method::GET,
@@ -217,16 +233,26 @@ impl S3Client {
                 &query,
                 HeaderMap::new(),
                 None,
-                &deadline,
+                deadline,
             )
             .await?;
         let request_ids = request_ids(response.headers());
         let body = self
-            .collect_response(response, self.config().max_xml_response_size(), &deadline)
+            .collect_response(response, self.config().max_xml_response_size(), deadline)
             .await?;
         let mut output = parse_list_multipart_uploads(&body, self.config().max_xml_response_size())
             .map_err(crate::client::request::protocol_error)?;
         output.request_ids = request_ids;
         Ok(output)
+    }
+}
+
+fn complete_multipart_embedded_error(
+    body: &[u8],
+    maximum: usize,
+) -> Result<Option<ParsedS3Error>, ProtocolError> {
+    match parse_complete_multipart_upload(body, maximum)? {
+        CompleteMultipartResponse::Complete(_) => Ok(None),
+        CompleteMultipartResponse::EmbeddedError(error) => Ok(Some(error)),
     }
 }

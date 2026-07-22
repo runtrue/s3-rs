@@ -8,6 +8,7 @@ updates:
       - /comparisons/size/aws-sdk-s3
       - /comparisons/size/rust-s3
       - /comparisons/size/s3-wire
+      - /comparisons/size/s3-wire-http2
     schedule:
       interval: weekly
       day: monday

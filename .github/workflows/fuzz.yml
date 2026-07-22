@@ -1,0 +1,81 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "43 02 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.97.1
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target:
+          - canonical_uri
+          - canonical_query
+          - header_canonicalization
+          - s3_error_xml
+          - list_objects_v2_xml
+          - multipart_xml
+          - endpoint_construction
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust and LLVM tools
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component llvm-tools-preview
+          rustup default "$RUST_VERSION"
+      - name: Cache Cargo data and fuzz build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-fuzz
+            fuzz/target
+          key: fuzz-${{ runner.os }}-${{ env.RUST_VERSION }}-0.13.2-${{ matrix.target }}-${{ hashFiles('fuzz/Cargo.lock', 'fuzz/corpus/**') }}
+          restore-keys: |
+            fuzz-${{ runner.os }}-${{ env.RUST_VERSION }}-0.13.2-${{ matrix.target }}-
+      - name: Install cargo-fuzz
+        run: |
+          if ! cargo fuzz --version 2>/dev/null | grep -Fq '0.13.2'; then
+            cargo install cargo-fuzz --locked --version 0.13.2
+          fi
+      - name: Run bounded fuzz campaign
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p "fuzz/artifacts/$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET"
+          cargo fuzz run "$FUZZ_TARGET" -- \
+            -max_total_time=180 \
+            -timeout=10 \
+            -rss_limit_mb=2048 \
+            -print_final_stats=1 \
+            -artifact_prefix="fuzz/artifacts/$FUZZ_TARGET/"
+      - name: Upload corpus and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            fuzz/corpus/${{ matrix.target }}
+            fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: warn
+          retention-days: 30

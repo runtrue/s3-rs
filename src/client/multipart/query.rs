@@ -1,5 +1,5 @@
 use crate::error::S3Error;
-use crate::operation::{ListMultipartUploadsRequest, UploadId};
+use crate::operation::{ListMultipartUploadsRequest, ListPartsRequest, UploadId};
 
 pub(super) fn create_query() -> Vec<(String, String)> {
     vec![("uploads".to_owned(), String::new())]
@@ -14,6 +14,20 @@ pub(super) fn upload_part_query(part_number: u16, upload_id: &UploadId) -> Vec<(
         ("partNumber".to_owned(), part_number.to_string()),
         ("uploadId".to_owned(), upload_id.as_str().to_owned()),
     ]
+}
+
+pub(super) fn list_parts_query(request: &ListPartsRequest) -> Vec<(String, String)> {
+    let mut query = vec![
+        ("max-parts".to_owned(), request.max_parts.get().to_string()),
+        (
+            "uploadId".to_owned(),
+            request.upload_id().as_str().to_owned(),
+        ),
+    ];
+    if let Some(marker) = request.part_number_marker {
+        query.push(("part-number-marker".to_owned(), marker.get().to_string()));
+    }
+    query
 }
 
 pub(super) fn list_query(

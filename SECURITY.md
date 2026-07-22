@@ -10,7 +10,18 @@ Report suspected vulnerabilities through [GitHub's private vulnerability reporti
 
 Include the affected version or revision, deployment conditions, reproduction steps, expected impact, and any known mitigations. Remove real credentials, authorization headers, signed URL query strings, bucket names, and object data from the report. Use synthetic credentials when a reproduction requires request material.
 
-The maintainers will acknowledge the report, validate its scope, coordinate a fix and release when needed, and credit reporters who request attribution. Public disclosure should wait until a fix or mitigation is available to affected users.
+The maintainers aim to acknowledge a report within three business days, provide
+an initial assessment within seven business days, and send progress updates at
+least every seven days while remediation is active. These are best-effort
+targets, not a service-level agreement. The maintainers will validate scope,
+coordinate a fix and release when needed, and credit reporters who request
+attribution. Public disclosure should wait until a fix or mitigation is
+available to affected users.
+
+Critical and high-severity runtime fixes are released as soon as validation is
+green. Other affected runtime fixes are normally included in the next patch
+release. Development-only findings do not cause a crate release unless the
+published artifact or its users are exposed.
 
 ## Security boundaries
 

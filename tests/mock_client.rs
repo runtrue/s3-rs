@@ -2,7 +2,7 @@
 
 mod support;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -11,10 +11,13 @@ use bytes::Bytes;
 use futures_util::{StreamExt as _, stream};
 use http::StatusCode;
 use s3_wire::{
-    ByteStream, Credentials, DeleteObjectRequest, Endpoint, ErrorCategory, GetObjectRequest,
-    ListObjectsV2Request, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey,
-    PutObjectRequest, RetryPolicy, S3Client, S3Config, S3Error, StaticCredentialsProvider,
-    TimeoutPhase,
+    ByteStream, ChecksumAlgorithm, CompleteMultipartUploadRequest, CompletedPart, Conditions,
+    CopyMetadataDirective, CopyObjectRequest, CopyPartRange, CopySource, Credentials,
+    DeleteObjectRequest, Endpoint, ErrorCategory, GetObjectRequest, ListObjectsV2Request,
+    ListPartsRequest, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, PartNumber,
+    PutObjectRequest, RequestEvent, RequestEventKind, RequestObserver, RetryPolicy,
+    RetryStopReason, S3Client, S3Config, S3Error, StaticCredentialsProvider, TimeoutPhase,
+    UploadId, UploadPartCopyRequest,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -31,13 +34,22 @@ fn client(server: &MockServer) -> S3Client {
 }
 
 fn client_with(server: &MockServer, xml_limit: usize, idle_timeout: Duration) -> S3Client {
+    client_with_observer(server, xml_limit, idle_timeout, None)
+}
+
+fn client_with_observer(
+    server: &MockServer,
+    xml_limit: usize,
+    idle_timeout: Duration,
+    observer: Option<Arc<dyn RequestObserver>>,
+) -> S3Client {
     let credentials = Credentials::new(
         "TESTACCESSKEY",
         "test-secret-key",
         Some("test-session-token".to_owned()),
     )
     .expect("valid test credentials");
-    let config = S3Config::builder()
+    let mut builder = S3Config::builder()
         .endpoint(Endpoint::new(server.endpoint()).expect("valid mock endpoint"))
         .allow_http_for_local_testing()
         .bucket("test-bucket")
@@ -57,10 +69,23 @@ fn client_with(server: &MockServer, xml_limit: usize, idle_timeout: Duration) ->
         .operation_timeout(Duration::from_secs(2))
         .idle_body_timeout(idle_timeout)
         .max_xml_response_size(xml_limit)
-        .max_error_response_size(4096)
-        .build()
-        .expect("valid test config");
+        .max_error_response_size(4096);
+    if let Some(observer) = observer {
+        builder = builder.observer(observer);
+    }
+    let config = builder.build().expect("valid test config");
     S3Client::new(config).expect("construct test client")
+}
+
+#[derive(Default)]
+struct EventRecorder {
+    events: Mutex<Vec<RequestEventKind>>,
+}
+
+impl RequestObserver for EventRecorder {
+    fn on_event(&self, event: RequestEvent<'_>) {
+        self.events.lock().unwrap().push(event.kind);
+    }
 }
 
 fn managed_bytes(key: ObjectKey, bytes: Vec<u8>) -> ManagedMultipartUploadRequest {
@@ -176,6 +201,214 @@ async fn retries_throttling_responses_up_to_the_configured_attempt_count() {
 }
 
 #[tokio::test]
+async fn observer_records_complete_retry_lifecycle() {
+    let server = MockServer::start(|attempt, _| {
+        if attempt == 1 {
+            Reply::xml(
+                StatusCode::SERVICE_UNAVAILABLE,
+                b"<Error><Code>SlowDown</Code></Error>".to_vec(),
+            )
+        } else {
+            Reply::empty(StatusCode::NO_CONTENT)
+        }
+    })
+    .await;
+    let recorder = Arc::new(EventRecorder::default());
+    let observer: Arc<dyn RequestObserver> = recorder.clone();
+
+    client_with_observer(
+        &server,
+        1024 * 1024,
+        Duration::from_millis(100),
+        Some(observer),
+    )
+    .delete_object(DeleteObjectRequest::new(key("observed")))
+    .await
+    .expect("retry succeeds");
+
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec![
+            RequestEventKind::AttemptStarted,
+            RequestEventKind::RetryScheduled,
+            RequestEventKind::AttemptStarted,
+            RequestEventKind::AttemptSucceeded,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn retries_embedded_copy_errors_returned_with_http_200() {
+    let server = MockServer::start(|attempt, _| {
+        if attempt == 1 {
+            Reply::xml(
+                StatusCode::OK,
+                b"<Error><Code>SlowDown</Code><Message>retry later</Message></Error>".to_vec(),
+            )
+        } else {
+            Reply::xml(
+                StatusCode::OK,
+                b"<CopyObjectResult><ETag>\"copied\"</ETag></CopyObjectResult>".to_vec(),
+            )
+        }
+    })
+    .await;
+
+    let output = client(&server)
+        .copy_object(CopyObjectRequest {
+            source: CopySource {
+                bucket: "source-bucket".to_owned(),
+                key: key("source"),
+                version_id: None,
+            },
+            destination: key("destination"),
+            source_conditions: Conditions::default(),
+            metadata: CopyMetadataDirective::Copy,
+        })
+        .await
+        .expect("retryable embedded error is retried");
+
+    assert_eq!(output.e_tag.as_deref(), Some("\"copied\""));
+    assert_eq!(server.request_count().await, 2);
+}
+
+#[tokio::test]
+async fn retries_interrupted_collected_copy_responses() {
+    let server = MockServer::start(|attempt, _| {
+        if attempt == 1 {
+            Reply::Truncated {
+                status: StatusCode::OK,
+                declared_length: 100,
+                body: b"<CopyObjectResult>".to_vec(),
+            }
+        } else {
+            Reply::xml(
+                StatusCode::OK,
+                b"<CopyObjectResult><ETag>&quot;copied&quot;</ETag></CopyObjectResult>".to_vec(),
+            )
+        }
+    })
+    .await;
+
+    let output = client(&server)
+        .copy_object(CopyObjectRequest {
+            source: CopySource {
+                bucket: "source-bucket".to_owned(),
+                key: key("source"),
+                version_id: None,
+            },
+            destination: key("destination"),
+            source_conditions: Conditions::default(),
+            metadata: CopyMetadataDirective::Copy,
+        })
+        .await
+        .expect("interrupted collected body is retried");
+
+    assert_eq!(output.e_tag.as_deref(), Some("\"copied\""));
+    assert_eq!(server.request_count().await, 2);
+}
+
+#[tokio::test]
+async fn does_not_retry_permanent_embedded_copy_errors() {
+    let server = MockServer::start(|_, _| {
+        Reply::xml(
+            StatusCode::OK,
+            b"<Error><Code>AccessDenied</Code><Message>copy denied</Message></Error>".to_vec(),
+        )
+    })
+    .await;
+
+    let error = client(&server)
+        .copy_object(CopyObjectRequest {
+            source: CopySource {
+                bucket: "source-bucket".to_owned(),
+                key: key("source"),
+                version_id: None,
+            },
+            destination: key("destination"),
+            source_conditions: Conditions::default(),
+            metadata: CopyMetadataDirective::Copy,
+        })
+        .await
+        .expect_err("permanent embedded error fails the copy");
+
+    assert_eq!(error.category(), ErrorCategory::Authorization);
+    assert_eq!(error.attempts(), 1);
+    assert_eq!(
+        error.retry_stop_reason(),
+        Some(RetryStopReason::NonRetryable)
+    );
+    assert_eq!(server.request_count().await, 1);
+}
+
+#[tokio::test]
+async fn retries_embedded_complete_multipart_errors_returned_with_http_200() {
+    let server = MockServer::start(|attempt, _| {
+        if attempt == 1 {
+            Reply::xml(
+                StatusCode::OK,
+                b"<Error><Code>InternalError</Code><Message>retry later</Message></Error>".to_vec(),
+            )
+        } else {
+            complete_multipart_reply("completed")
+        }
+    })
+    .await;
+    let request = CompleteMultipartUploadRequest::new(
+        key("completed"),
+        UploadId::new("upload-id").expect("valid upload id"),
+        vec![CompletedPart::new(1, "\"part-one\"").expect("valid part")],
+    )
+    .expect("valid completion request");
+
+    let output = client(&server)
+        .complete_multipart_upload(request)
+        .await
+        .expect("retryable embedded error is retried");
+
+    assert_eq!(output.e_tag.as_deref(), Some("\"complete\""));
+    assert_eq!(server.request_count().await, 2);
+}
+
+#[tokio::test]
+async fn copy_metadata_behavior_is_explicit_on_the_wire() {
+    let server = MockServer::start(|_, _| {
+        Reply::xml(
+            StatusCode::OK,
+            b"<CopyObjectResult><ETag>\"copied\"</ETag></CopyObjectResult>".to_vec(),
+        )
+    })
+    .await;
+
+    client(&server)
+        .copy_object(CopyObjectRequest {
+            source: CopySource {
+                bucket: "source-bucket".to_owned(),
+                key: key("source"),
+                version_id: None,
+            },
+            destination: key("destination"),
+            source_conditions: Conditions::default(),
+            metadata: CopyMetadataDirective::Replace {
+                content_type: Some("text/plain".to_owned()),
+                user_metadata: [("purpose".to_owned(), "test".to_owned())]
+                    .into_iter()
+                    .collect(),
+            },
+        })
+        .await
+        .expect("copy succeeds");
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests[0].header("x-amz-metadata-directive"),
+        Some("REPLACE")
+    );
+    assert_eq!(requests[0].header("content-type"), Some("text/plain"));
+    assert_eq!(requests[0].header("x-amz-meta-purpose"), Some("test"));
+}
+
+#[tokio::test]
 async fn does_not_retry_a_non_replayable_upload_body() {
     let server = MockServer::start(|_, _| {
         Reply::xml(
@@ -198,8 +431,86 @@ async fn does_not_retry_a_non_replayable_upload_body() {
         .expect_err("503 is returned to the caller");
 
     assert_eq!(error.category(), ErrorCategory::Throttling);
+    assert_eq!(error.attempts(), 1);
+    assert_eq!(
+        error.retry_stop_reason(),
+        Some(RetryStopReason::NonReplayable)
+    );
     assert_eq!(server.request_count().await, 1);
     assert_eq!(server.requests().await[0].body, bytes);
+}
+
+#[tokio::test]
+async fn upload_part_copy_sends_range_and_source_on_the_wire() {
+    let server = MockServer::start(|_, _| {
+        Reply::xml(
+            StatusCode::OK,
+            b"<CopyPartResult><LastModified>2024-03-12T10:15:30Z</LastModified><ETag>&quot;part-copy&quot;</ETag></CopyPartResult>".to_vec(),
+        )
+    })
+    .await;
+    let mut request = UploadPartCopyRequest::new(
+        key("destination"),
+        UploadId::new("upload/opaque").unwrap(),
+        PartNumber::new(3).unwrap(),
+        CopySource {
+            bucket: "source-bucket".to_owned(),
+            key: key("source key"),
+            version_id: Some("version+id".to_owned()),
+        },
+    );
+    request.source_range = Some(CopyPartRange::new(10, 29).unwrap());
+
+    let output = client(&server)
+        .upload_part_copy(request)
+        .await
+        .expect("part copy succeeds");
+
+    assert_eq!(output.e_tag, "\"part-copy\"");
+    let requests = server.requests().await;
+    assert_eq!(
+        requests[0].target,
+        "/test-bucket/destination?partNumber=3&uploadId=upload%2Fopaque"
+    );
+    assert_eq!(
+        requests[0].header("x-amz-copy-source"),
+        Some("/source-bucket/source%20key?versionId=version%2Bid")
+    );
+    assert_eq!(
+        requests[0].header("x-amz-copy-source-range"),
+        Some("bytes=10-29")
+    );
+}
+
+#[tokio::test]
+async fn list_parts_all_advances_markers_on_the_wire() {
+    let server = MockServer::start(|attempt, _| {
+        if attempt == 1 {
+            Reply::xml(
+                StatusCode::OK,
+                b"<ListPartsResult><IsTruncated>true</IsTruncated><NextPartNumberMarker>1</NextPartNumberMarker><Part><PartNumber>1</PartNumber><ETag>&quot;one&quot;</ETag><Size>5</Size></Part></ListPartsResult>".to_vec(),
+            )
+        } else {
+            Reply::xml(
+                StatusCode::OK,
+                b"<ListPartsResult><IsTruncated>false</IsTruncated><Part><PartNumber>2</PartNumber><ETag>&quot;two&quot;</ETag><Size>4</Size></Part></ListPartsResult>".to_vec(),
+            )
+        }
+    })
+    .await;
+
+    let pages = client(&server)
+        .list_parts_all(
+            ListPartsRequest::new(key("parts"), UploadId::new("upload-id").unwrap()),
+            3,
+        )
+        .await
+        .expect("pagination succeeds");
+
+    assert_eq!(pages.len(), 2);
+    let requests = server.requests().await;
+    assert!(requests[0].target.contains("uploadId=upload-id"));
+    assert!(requests[1].target.contains("part-number-marker=1"));
 }
 
 #[tokio::test]
@@ -320,8 +631,62 @@ async fn reports_a_full_object_sha256_mismatch_at_download_eof() {
 }
 
 #[tokio::test]
+async fn atomic_download_replaces_destination_only_after_verification() {
+    let expected = b"verified replacement".to_vec();
+    let response_body = expected.clone();
+    let checksum = sha256_base64(&expected);
+    let server = MockServer::start(move |_, _| Reply::Full {
+        status: StatusCode::OK,
+        headers: vec![
+            ("x-amz-checksum-sha256".to_owned(), checksum.clone()),
+            ("x-amz-checksum-type".to_owned(), "FULL_OBJECT".to_owned()),
+        ],
+        body: response_body.clone(),
+    })
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("object");
+    std::fs::write(&destination, b"old").unwrap();
+
+    let output = client(&server)
+        .download_to_path(GetObjectRequest::new(key("atomic")), &destination)
+        .await
+        .expect("verified download persists");
+
+    assert_eq!(output.bytes_written, expected.len() as u64);
+    assert_eq!(std::fs::read(destination).unwrap(), expected);
+}
+
+#[tokio::test]
+async fn failed_atomic_download_preserves_existing_destination() {
+    let server = MockServer::start(|_, _| Reply::Full {
+        status: StatusCode::OK,
+        headers: vec![
+            (
+                "x-amz-checksum-sha256".to_owned(),
+                sha256_base64(b"different bytes"),
+            ),
+            ("x-amz-checksum-type".to_owned(), "FULL_OBJECT".to_owned()),
+        ],
+        body: b"corrupted".to_vec(),
+    })
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("object");
+    std::fs::write(&destination, b"old").unwrap();
+
+    let error = client(&server)
+        .download_to_path(GetObjectRequest::new(key("atomic-failure")), &destination)
+        .await
+        .expect_err("checksum mismatch is not persisted");
+
+    assert_eq!(error.category(), ErrorCategory::Integrity);
+    assert_eq!(std::fs::read(destination).unwrap(), b"old");
+}
+
+#[tokio::test]
 async fn rejects_repeated_pagination_tokens() {
-    let body = b"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>repeat</NextContinuationToken></ListBucketResult>".to_vec();
+    let body = b"<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>true</IsTruncated><NextContinuationToken>repeat</NextContinuationToken></ListBucketResult>".to_vec();
     let server = MockServer::start(move |_, _| Reply::xml(StatusCode::OK, body.clone())).await;
 
     let error = client(&server)
@@ -331,6 +696,13 @@ async fn rejects_repeated_pagination_tokens() {
 
     assert_eq!(error.category(), ErrorCategory::InvalidResponse);
     assert_eq!(server.request_count().await, 2);
+    assert!(
+        server
+            .requests()
+            .await
+            .iter()
+            .all(|request| request.target.contains("encoding-type=url"))
+    );
 }
 
 #[tokio::test]
@@ -401,6 +773,36 @@ async fn managed_multipart_upload_sends_exact_parts_then_ordered_completion() {
         requests[3].body,
         b"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"part-1\"</ETag></Part><Part><PartNumber>2</PartNumber><ETag>\"part-2\"</ETag></Part></CompleteMultipartUpload>"
     );
+}
+
+#[tokio::test]
+async fn managed_multipart_calculates_selected_part_checksum_headers() {
+    let server = MockServer::start(|_, request| match request.method.as_str() {
+        "POST" if request.target.ends_with("?uploads=") => create_multipart_reply("checksum"),
+        "PUT" => upload_part_reply("1"),
+        "POST" => complete_multipart_reply("checksum"),
+        _ => Reply::empty(StatusCode::NOT_FOUND),
+    })
+    .await;
+    let request = managed_bytes(key("checksum"), vec![b'x'; MINIMUM_PART_SIZE])
+        .with_checksum_algorithm(ChecksumAlgorithm::Crc32c)
+        .expect("CRC32C is supported");
+
+    client(&server)
+        .multipart_upload(request)
+        .await
+        .expect("managed upload succeeds");
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests[0].header("x-amz-checksum-algorithm"),
+        Some("CRC32C")
+    );
+    let part = requests
+        .iter()
+        .find(|request| request.method == "PUT")
+        .expect("part request");
+    assert!(part.header("x-amz-checksum-crc32c").is_some());
 }
 
 #[tokio::test]

@@ -40,6 +40,13 @@ Run the transfer and RSS harness using [`tools/perf/README.md`](../tools/perf/RE
 ./comparisons/size/measure.sh
 ```
 
+CI preserves the committed `results.json`, measures from a clean tracked source
+tree, and compares the minimal `s3-wire` binary against that baseline. The
+default failure envelope is 15% binary growth or more than five additional
+normal/build dependency packages. Override `SIZE_MAX_GROWTH_PERCENT` and
+`SIZE_MAX_DEPENDENCY_GROWTH` only for an intentional, reviewed baseline update.
+Build timings are recorded but do not gate shared-runner CI.
+
 The comparison harness retains a representative HEAD operation and records
 separate HTTP/1.1-only and HTTP/2-enabled `s3-wire` binaries.
 

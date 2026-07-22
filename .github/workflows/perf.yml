@@ -1,6 +1,8 @@
 name: Performance
 
 on:
+  schedule:
+    - cron: "29 03 * * 3"
   workflow_dispatch:
     inputs:
       comment_pr:
@@ -31,7 +33,6 @@ jobs:
     name: Deterministic benchmarks
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: performance
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,6 +40,8 @@ jobs:
         run: |
           rustup toolchain install "$RUST_VERSION" --profile minimal
           rustup default "$RUST_VERSION"
+      - name: Require a clean tracked source tree
+        run: test -z "$(git status --porcelain --untracked-files=no -- Cargo.toml Cargo.lock src benches tools/perf)"
       - name: Cache Cargo data
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

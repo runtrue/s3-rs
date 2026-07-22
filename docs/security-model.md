@@ -37,7 +37,13 @@ Custom endpoint ownership and DNS should be verified before credentials are prov
 
 Credentials use `secrecy::SecretString`. Standard `Debug` and `Display` output does not reveal secret keys, session tokens, presigned URLs, or upload IDs. `S3Error` retains source error types without source text that might contain a URL, header, or response body.
 
-`CachedCredentialsProvider` serializes refreshes to avoid a refresh storm. The environment provider reads credentials but does not write or persist them. The crate currently makes no EC2, ECS, or web-identity metadata calls.
+`CachedCredentialsProvider` serializes refreshes to avoid a refresh storm. The
+environment provider reads credentials but does not write or persist them. The
+opt-in `aws-credentials` feature can use profiles, credential processes,
+web-identity endpoints, ECS endpoints, and EC2 IMDSv2. Enable it only in a
+trusted workload environment, constrain metadata routing and IAM permissions,
+and treat configured profile/process paths and endpoint variables as trusted
+configuration. The default feature set makes none of those metadata calls.
 
 Presigned URLs are bearer credentials. `PresignedUrl` is redacted by default and requires `expose()` or `into_exposed()` to access the complete URL. Applications should:
 
@@ -69,6 +75,7 @@ Client configuration and request-scoped options bound:
 - overall-operation timeout;
 - idle-response-body timeout;
 - retry attempts and elapsed retry time;
+- a shared retry token quota across bucket handles;
 - backoff and accepted `Retry-After` delay;
 - XML and error response bytes;
 - list pages;
@@ -85,6 +92,7 @@ Every signed payload uses a SHA-256 SigV4 payload hash:
 - replayable bytes and file snapshots are hashed by the client;
 - one-shot streams require a caller-supplied length and digest and are checked as transmitted;
 - PutObject can add an S3 SHA-256 checksum;
+- managed multipart can calculate CRC32, CRC32C, CRC64NVME, or SHA-256 per part;
 - returned checksum headers are syntax-validated; and
 - a returned full-object SHA-256 checksum is recalculated during streaming download.
 

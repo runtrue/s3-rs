@@ -11,7 +11,7 @@ use super::types::{
 
 const MAX_PRESIGN_EXPIRY: u64 = 7 * 24 * 60 * 60;
 
-/// Create the complete encoded query string for a presigned GET or PUT.
+/// Create the complete encoded query string for a supported presigned S3 request.
 pub(crate) fn sign_presigned(
     credentials: &SigningCredentials<'_>,
     scope: SigningScope<'_>,
@@ -19,7 +19,7 @@ pub(crate) fn sign_presigned(
     timestamp: OffsetDateTime,
 ) -> Result<PresignedQuery, SigningError> {
     validate_common(credentials, scope, request.method)?;
-    if !matches!(request.method, "GET" | "PUT") {
+    if !matches!(request.method, "GET" | "PUT" | "HEAD" | "DELETE" | "POST") {
         return Err(SigningError::UnsupportedPresignMethod);
     }
     let expires = request.expires.as_secs();

@@ -151,11 +151,7 @@ pub(in crate::client) fn service_error(
 ) -> S3Error {
     let code = parsed.as_ref().and_then(|error| error.code.clone());
     let category = classify_service_error(status, code.as_deref());
-    let retry = match category {
-        ErrorCategory::Throttling => RetryClassification::Throttled,
-        ErrorCategory::Server => RetryClassification::Retryable,
-        _ => RetryClassification::Never,
-    };
+    let retry = classify_retry(status, code.as_deref(), category);
     let message = parsed
         .as_ref()
         .and_then(|error| error.message.as_deref())
@@ -192,16 +188,57 @@ fn classify_service_error(status: StatusCode, code: Option<&str>) -> ErrorCatego
         }
         Some("AccessDenied" | "AllAccessDisabled") => ErrorCategory::Authorization,
         Some("NoSuchKey" | "NoSuchBucket" | "NoSuchUpload" | "NotFound") => ErrorCategory::NotFound,
-        Some("PreconditionFailed" | "ConditionalRequestConflict") => ErrorCategory::Precondition,
-        Some("SlowDown" | "Throttling" | "ThrottlingException") => ErrorCategory::Throttling,
+        Some("PreconditionFailed") => ErrorCategory::Precondition,
+        Some("ConditionalRequestConflict" | "OperationAborted") => ErrorCategory::Conflict,
+        Some(
+            "SlowDown"
+            | "Throttling"
+            | "ThrottlingException"
+            | "RequestLimitExceeded"
+            | "TooManyRequestsException"
+            | "BandwidthLimitExceeded",
+        ) => ErrorCategory::Throttling,
+        Some(
+            "InternalError"
+            | "InternalFailure"
+            | "ServiceUnavailable"
+            | "ServiceUnavailableException"
+            | "RequestTimeout"
+            | "RequestTimeoutException"
+            | "PriorRequestNotComplete",
+        ) => ErrorCategory::Server,
         _ if status == StatusCode::UNAUTHORIZED => ErrorCategory::Authentication,
         _ if status == StatusCode::FORBIDDEN => ErrorCategory::Authorization,
         _ if status == StatusCode::NOT_FOUND => ErrorCategory::NotFound,
         _ if status == StatusCode::CONFLICT => ErrorCategory::Conflict,
         _ if status == StatusCode::PRECONDITION_FAILED => ErrorCategory::Precondition,
         _ if status == StatusCode::TOO_MANY_REQUESTS => ErrorCategory::Throttling,
+        _ if status == StatusCode::REQUEST_TIMEOUT => ErrorCategory::Server,
         _ if status.is_server_error() => ErrorCategory::Server,
         _ => ErrorCategory::InvalidResponse,
+    }
+}
+
+fn classify_retry(
+    status: StatusCode,
+    code: Option<&str>,
+    category: ErrorCategory,
+) -> RetryClassification {
+    match category {
+        ErrorCategory::Throttling => RetryClassification::Throttled,
+        ErrorCategory::Server | ErrorCategory::Transport | ErrorCategory::Timeout => {
+            RetryClassification::Retryable
+        }
+        ErrorCategory::Conflict
+            if matches!(
+                code,
+                Some("ConditionalRequestConflict" | "OperationAborted")
+            ) =>
+        {
+            RetryClassification::Retryable
+        }
+        _ if matches!(status.as_u16(), 500 | 502 | 503 | 504) => RetryClassification::Retryable,
+        _ => RetryClassification::Never,
     }
 }
 
@@ -269,6 +306,18 @@ mod tests {
         assert_eq!(
             classify_service_error(StatusCode::FORBIDDEN, None),
             ErrorCategory::Authorization
+        );
+        assert_eq!(
+            classify_service_error(StatusCode::OK, Some("InternalError")),
+            ErrorCategory::Server
+        );
+        assert_eq!(
+            classify_retry(
+                StatusCode::CONFLICT,
+                Some("ConditionalRequestConflict"),
+                ErrorCategory::Conflict
+            ),
+            RetryClassification::Retryable
         );
     }
 }

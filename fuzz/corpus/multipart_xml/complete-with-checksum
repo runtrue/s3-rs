@@ -1,0 +1,1 @@
+<CompleteMultipartUploadResult><Location>https://example.invalid/b/k</Location><Bucket>b</Bucket><Key>k</Key><ETag>&quot;synthetic&quot;</ETag><ChecksumCRC64NVME>AAAAAA==</ChecksumCRC64NVME></CompleteMultipartUploadResult>

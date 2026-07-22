@@ -104,7 +104,7 @@ impl HeaderSigningOutput {
     }
 }
 
-/// A GET or PUT request whose authorization is carried in its query string.
+/// An S3 request whose authorization is carried in its query string.
 pub(crate) struct PresigningRequest<'a> {
     pub(crate) method: &'a str,
     pub(crate) uri_path: SigningPath<'a>,
@@ -164,7 +164,7 @@ impl fmt::Display for SigningError {
             Self::ReservedHeader => "a signing-owned header was supplied",
             Self::ReservedQueryParameter => "a signing-owned query parameter was supplied",
             Self::InvalidExpiry => "presigning expiry must be between 1 second and 7 days",
-            Self::UnsupportedPresignMethod => "only GET and PUT requests may be presigned",
+            Self::UnsupportedPresignMethod => "unsupported HTTP method for S3 presigning",
             Self::Cryptographic => "signature calculation failed",
             Self::Timestamp => "signing timestamp could not be represented",
         })
