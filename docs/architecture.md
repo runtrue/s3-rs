@@ -6,17 +6,18 @@
 
 | Layer | Responsibility |
 | --- | --- |
-| `config` | Validate endpoints, addressing, credentials, timeouts, retries, response limits, and multipart bounds |
+| `config` | Validate endpoints, addressing, credentials, timeouts, retries, and response limits |
 | `operation` | Define public requests, responses, object keys, conditions, checksums, listings, and multipart state |
 | `endpoint` | Build exact path-style or virtual-hosted request targets without applying filesystem semantics to keys |
 | `signing` | Produce SigV4 canonical requests, authorization headers, and presigned query strings |
-| `transport` | Send HTTP/1.1 or HTTP/2 requests through Rustls and adapt response bodies into streams |
+| `transport` | Send HTTP/1.1 requests, optionally negotiate HTTP/2, and adapt Rustls-protected response bodies into streams |
 | `protocol` | Serialize and parse bounded S3 XML documents while rejecting DTD and entity declarations |
 | `retry` | Classify failures and calculate bounded backoff with jitter and `Retry-After` support |
 | `stream` | Model replayable and one-shot uploads plus backpressured, integrity-checked downloads |
 | `client` | Join the layers, enforce deadlines, classify responses, and orchestrate retries and multipart uploads |
 
-Only `client`, `config`, `credentials`, `endpoint`, `error`, `operation`, `retry`, and `stream` are public modules.
+These implementation modules are private. Their intentionally supported types
+are re-exported from the crate root so applications have one compact API path.
 
 ## Request flow
 
@@ -57,16 +58,21 @@ Dropping the response stops body work; there is no detached download task. The c
 
 ## Multipart ownership
 
-Managed multipart accepts replayable bytes or a file snapshot. `multipart_part_size`, `multipart_concurrency`, and `max_multipart_in_flight_bytes` are validated together before the upload starts.
+Managed multipart accepts replayable bytes or a file snapshot. Each request owns
+validated `MultipartOptions`: part size, concurrency, an end-to-end transfer
+deadline, and a separate cleanup deadline. The maximum retained part bytes are
+derived from part size times concurrency.
 
-After S3 creates an upload, a client-owned task retains the upload ID. If the public future is dropped, that task cancels outstanding parts and attempts `AbortMultipartUpload`. A normal failure waits for abort; if abort also fails, `S3Error::cleanup_failure()` preserves the cleanup error beside the primary error.
+After S3 creates an upload, a client-owned task retains the upload ID. If the public future is dropped, that task stops scheduling parts, gives transmitted requests a bounded opportunity to settle, and attempts `AbortMultipartUpload` within the cleanup deadline. A normal failure waits for cleanup; if requests cannot be quiesced or abort fails, `S3Error::cleanup_failure()` preserves the cleanup error beside the primary error.
 
-Multipart selection remains application policy. `multipart_threshold` is validated configuration that callers may use, but `put_object` never changes operation type automatically.
+Multipart selection remains application policy; `put_object` never changes
+operation type automatically.
 
 ## Dependency choices
 
 - Tokio provides the runtime, timers, synchronization, cancellation integration, and async file I/O.
-- Hyper and `hyper-util` provide HTTP without becoming part of the public API.
+- Hyper and `hyper-util` provide HTTP/1.1 by default without becoming part of
+  the public API. The `http2` feature adds HTTP/2 negotiation.
 - Rustls and `hyper-rustls` provide TLS with WebPKI roots; certificate verification cannot be disabled.
 - `quick-xml` and Serde handle the focused XML documents used by supported operations.
 - `sha2`, `hmac`, `md-5`, `base64`, `subtle`, and `zeroize` cover signing, integrity fields, constant-time comparisons, and key-material cleanup.

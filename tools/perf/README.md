@@ -35,6 +35,6 @@ maintained by the same sampler; kernel `VmHWM` is omitted because its accounting
 can lag sampled `VmRSS`.
 
 The runner also fails if the disk-backed phase's sampled RSS delta exceeds four
-times the configured multipart in-flight byte budget. This conservative
+times the multipart options' derived in-flight byte bound. This conservative
 regression envelope accounts for transport copies, runtime state, and allocator
 behavior; it is not a precise allocation model or a proof of constant memory.

@@ -103,7 +103,7 @@ impl S3Client {
         if request.fetch_owner {
             query.push(("fetch-owner".to_owned(), "true".to_owned()));
         }
-        let target = self.object_operation_target(None)?;
+        let target = self.operation_target(None)?;
         let response = self
             .send_signed(
                 Method::GET,

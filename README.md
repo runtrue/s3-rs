@@ -25,6 +25,9 @@ cargo add s3-wire
 cargo add tokio --features fs,macros,rt-multi-thread
 ```
 
+The default transport uses HTTP/1.1. Enable the `http2` crate feature when an
+endpoint and workload benefit from HTTP/2 negotiation.
+
 ## Quick start
 
 The default credential provider reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`. Remote endpoints must use HTTPS; plain HTTP is an explicit local-testing opt-in.
@@ -70,7 +73,7 @@ The example uses the standard AWS credential variables plus `S3_BUCKET`, and sup
 
 ## Configuration and credentials
 
-`S3Config` validates addressing, timeouts, retry policy, response limits, multipart bounds, and the credential provider before a client is created:
+`S3Config` validates addressing, timeouts, retry policy, response limits, and the credential provider before a client is created:
 
 ```rust,no_run
 use std::sync::Arc;
@@ -102,9 +105,6 @@ fn configured_client() -> Result<S3Client, Box<dyn std::error::Error>> {
         .operation_timeout(Duration::from_secs(5 * 60))
         .idle_body_timeout(Duration::from_secs(30))
         .retry_policy(retries)
-        .multipart_part_size(8 * 1024 * 1024)
-        .multipart_concurrency(4)
-        .max_multipart_in_flight_bytes(32 * 1024 * 1024)
         .credentials_provider(cached_provider)
         .build()?;
 
@@ -128,17 +128,25 @@ File uploads are hashed into an immutable temporary snapshot before the first re
 
 ## Multipart uploads
 
-Managed multipart handles part scheduling, bounded in-flight bytes, completion, and best-effort abort cleanup:
+Managed multipart handles part scheduling, a derived in-flight byte bound, one
+end-to-end transfer deadline, completion, and separately bounded cleanup that
+quiesces in-flight part requests before aborting:
 
 ```rust,no_run
-use s3_wire::{ManagedMultipartUploadRequest, ObjectKey, S3Client};
+use std::time::Duration;
+
+use s3_wire::{ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, S3Client};
 
 async fn upload_large_file(client: &S3Client) -> Result<(), Box<dyn std::error::Error>> {
-    let request = ManagedMultipartUploadRequest::from_path(
-        ObjectKey::new("artifacts/archive.tar")?,
-        "archive.tar",
-    )
-    .with_content_type("application/x-tar");
+    let options = MultipartOptions::new(8 * 1024 * 1024, 4)?
+        .with_transfer_timeout(Duration::from_secs(15 * 60))?;
+    let request =
+        ManagedMultipartUploadRequest::from_path(
+            ObjectKey::new("artifacts/archive.tar")?,
+            "archive.tar",
+        )
+        .with_content_type("application/x-tar")
+        .with_options(options);
 
     client.multipart_upload(request).await?;
     Ok(())
@@ -147,7 +155,12 @@ async fn upload_large_file(client: &S3Client) -> Result<(), Box<dyn std::error::
 
 Multipart selection is intentional: `put_object` never switches modes automatically. Call `multipart_upload` when application policy says a source should use multipart. Primitive create, upload-part, complete, list, and abort operations are also available when the application must own multipart state.
 
-Dropping a managed upload cancels outstanding parts and attempts an abort after an upload ID exists. Process termination can still leave stale uploads, so long-running deployments should also run bounded stale-upload cleanup.
+Dropping a managed upload stops scheduling parts, gives transmitted requests a
+bounded opportunity to settle, and then attempts an abort after an upload ID
+exists. If requests cannot settle, the error exposes cleanup failure because
+abort cannot be guaranteed to win that race. Process termination can still
+leave stale uploads, so long-running deployments should also run bounded
+stale-upload cleanup.
 
 ## Listing and presigning
 
@@ -250,7 +263,9 @@ Run the fast validation set after local changes:
 
 ```sh
 cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
 cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
 cargo test --locked --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
 ```

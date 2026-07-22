@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use http::{HeaderMap, HeaderName, HeaderValue};
+use http::{HeaderMap, HeaderName};
 
+use crate::client::request::{insert_header, insert_named_header, insert_optional_named_header};
 use crate::error::S3Error;
 use crate::operation::{ChecksumAlgorithm, Conditions};
 use crate::stream::PreparedBody;
@@ -42,25 +43,25 @@ pub(in crate::client::object) fn insert_conditions(
     conditions: &Conditions,
     prefix: &str,
 ) -> Result<(), S3Error> {
-    insert_named_optional(
+    insert_optional_named_header(
         headers,
         &format!("{prefix}if-match"),
         conditions.if_match.as_deref(),
     )?;
-    insert_named_optional(
+    insert_optional_named_header(
         headers,
         &format!("{prefix}if-none-match"),
         conditions.if_none_match.as_deref(),
     )?;
     if let Some(value) = conditions.if_modified_since {
-        insert_named(
+        insert_named_header(
             headers,
             &format!("{prefix}if-modified-since"),
             &format_http_date(value),
         )?;
     }
     if let Some(value) = conditions.if_unmodified_since {
-        insert_named(
+        insert_named_header(
             headers,
             &format!("{prefix}if-unmodified-since"),
             &format_http_date(value),
@@ -79,47 +80,8 @@ pub(in crate::client::object) fn insert_user_metadata(
     metadata: &BTreeMap<String, String>,
 ) -> Result<(), S3Error> {
     for (name, value) in metadata {
-        insert_named(headers, &format!("x-amz-meta-{name}"), value)?;
+        insert_named_header(headers, &format!("x-amz-meta-{name}"), value)?;
     }
-    Ok(())
-}
-
-pub(in crate::client::object) fn insert_optional_header(
-    headers: &mut HeaderMap,
-    name: HeaderName,
-    value: Option<&str>,
-) -> Result<(), S3Error> {
-    if let Some(value) = value {
-        insert_header(headers, name, value)?;
-    }
-    Ok(())
-}
-
-fn insert_named_optional(
-    headers: &mut HeaderMap,
-    name: &str,
-    value: Option<&str>,
-) -> Result<(), S3Error> {
-    if let Some(value) = value {
-        insert_named(headers, name, value)?;
-    }
-    Ok(())
-}
-
-fn insert_named(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(), S3Error> {
-    let name = HeaderName::from_bytes(name.as_bytes())
-        .map_err(|_| S3Error::configuration("request contains an invalid header name"))?;
-    insert_header(headers, name, value)
-}
-
-pub(in crate::client::object) fn insert_header(
-    headers: &mut HeaderMap,
-    name: HeaderName,
-    value: &str,
-) -> Result<(), S3Error> {
-    let value = HeaderValue::from_str(value)
-        .map_err(|_| S3Error::configuration("request contains an invalid header value"))?;
-    headers.insert(name, value);
     Ok(())
 }
 

@@ -12,8 +12,8 @@ use bytes::Bytes;
 use futures_util::StreamExt as _;
 use s3_wire::{
     ByteStream, Credentials, DeleteObjectRequest, Endpoint, GetObjectRequest, HeadObjectRequest,
-    ManagedMultipartUploadRequest, ObjectKey, PutObjectRequest, S3Client, S3Config,
-    StaticCredentialsProvider,
+    ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, PutObjectRequest, S3Client,
+    S3Config, StaticCredentialsProvider,
 };
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -240,16 +240,9 @@ async fn main() -> Result<()> {
         .attempt_timeout(Duration::from_secs(600))
         .operation_timeout(Duration::from_secs(600))
         .idle_body_timeout(Duration::from_secs(60))
-        .multipart_threshold(options.part_bytes)
-        .multipart_part_size(options.part_bytes)
-        .multipart_concurrency(options.concurrency)
-        .max_multipart_in_flight_bytes(
-            options
-                .part_bytes
-                .checked_mul(u64::try_from(options.concurrency)?)
-                .ok_or("multipart byte budget overflow")?,
-        )
         .build()?;
+    let multipart_options = MultipartOptions::new(options.part_bytes, options.concurrency)?
+        .with_transfer_timeout(Duration::from_secs(600))?;
 
     let rss = RssSampler::start();
     let before = rss.begin_phase();
@@ -278,10 +271,10 @@ async fn main() -> Result<()> {
     let before = rss.begin_phase();
     let started = Instant::now();
     client
-        .multipart_upload(ManagedMultipartUploadRequest::from_path(
-            large_file_key.clone(),
-            large_file.path(),
-        ))
+        .multipart_upload(
+            ManagedMultipartUploadRequest::from_path(large_file_key.clone(), large_file.path())
+                .with_options(multipart_options),
+        )
         .await?;
     let disk_backed_multipart = Timing::transfer(
         started.elapsed(),
@@ -350,10 +343,10 @@ async fn main() -> Result<()> {
     let before = rss.begin_phase();
     let started = Instant::now();
     client
-        .multipart_upload(ManagedMultipartUploadRequest::from_bytes(
-            multipart_key.clone(),
-            payload,
-        ))
+        .multipart_upload(
+            ManagedMultipartUploadRequest::from_bytes(multipart_key.clone(), payload)
+                .with_options(multipart_options),
+        )
         .await?;
     let multipart = Timing::transfer(
         started.elapsed(),
@@ -396,7 +389,7 @@ async fn main() -> Result<()> {
                 observed_peak_rss_delta_bytes: disk_backed_observed_delta,
                 limit_bytes: disk_backed_peak_rss_limit_bytes,
                 passed: disk_backed_bound_passed,
-                rationale: "four times the configured multipart in-flight byte budget",
+                rationale: "four times the derived multipart in-flight byte bound",
             },
             single_put,
             streaming_get_to_sink: get,
@@ -410,7 +403,7 @@ async fn main() -> Result<()> {
             "GET is consumed incrementally without retaining the body and verifies byte count, but does not persist or hash the downloaded bytes.",
             "RSS is sampled from Linux /proc every 1 ms and is process-wide; allocator retention and prior phases make per-phase peaks non-isolated.",
             "The disk-backed phase generates its configured source with one reusable 64 KiB buffer, then includes the client's disk snapshot and bounded multipart upload in its timing.",
-            "The opt-in regression check permits four times the configured multipart in-flight budget for part buffers, transport copies, runtime state, and allocator behavior; it is an engineering envelope, not a precise allocation model.",
+            "The opt-in regression check permits four times the derived multipart in-flight byte bound for part buffers, transport copies, runtime state, and allocator behavior; it is an engineering envelope, not a precise allocation model.",
             "A peak-RSS delta at one object size demonstrates this run's bounded behavior but is not a proof of asymptotic memory usage; Linux page cache is outside process RSS.",
             "The aggregate process peak uses the same RSS sampler as phase peaks; kernel VmHWM is intentionally omitted because its accounting can lag sampled VmRSS.",
             "Cold client construction means the first S3Client::new call in this process; configuration construction is excluded.",

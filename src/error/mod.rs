@@ -205,7 +205,7 @@ impl S3Error {
     }
 
     /// Attaches parsed S3 response metadata.
-    pub fn with_service_details(
+    pub(crate) fn with_service_details(
         mut self,
         code: Option<String>,
         status: StatusCode,
@@ -231,13 +231,13 @@ impl S3Error {
     }
 
     /// Attaches a cleanup error without replacing the primary failure.
-    pub fn with_cleanup_failure(mut self, cleanup_failure: Self) -> Self {
+    pub(crate) fn with_cleanup_failure(mut self, cleanup_failure: Self) -> Self {
         self.details.cleanup_failure = Some(cleanup_failure);
         self
     }
 
     /// Attaches the server time and measured local clock offset.
-    pub fn with_clock_skew(
+    pub(crate) fn with_clock_skew(
         mut self,
         server_time: OffsetDateTime,
         local_time: OffsetDateTime,
@@ -257,9 +257,9 @@ impl S3Error {
         self.details.code.as_deref()
     }
 
-    /// Returns the HTTP response status, when a response was received.
-    pub fn status(&self) -> Option<StatusCode> {
-        self.details.status
+    /// Returns the numeric HTTP response status, when a response was received.
+    pub fn status(&self) -> Option<u16> {
+        self.details.status.map(|status| status.as_u16())
     }
 
     /// Returns the safe, caller-facing error message.
@@ -370,6 +370,17 @@ mod tests {
     #[test]
     fn public_error_is_pointer_sized() {
         assert_eq!(std::mem::size_of::<S3Error>(), std::mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn service_status_is_exposed_without_an_http_type() {
+        let error = S3Error::invalid_response("service error").with_service_details(
+            Some("NoSuchKey".to_owned()),
+            StatusCode::NOT_FOUND,
+            None,
+            None,
+        );
+        assert_eq!(error.status(), Some(404));
     }
 
     #[test]

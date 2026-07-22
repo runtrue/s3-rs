@@ -8,7 +8,9 @@ Run the pull-request validation set:
 
 ```sh
 cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
 cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets
 cargo test --locked --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
 ```
@@ -31,7 +33,7 @@ coverage floor; its report and HTML output remain available as workflow artifact
 | Layer | Location | Purpose |
 | --- | --- | --- |
 | Unit tests | `src/` | SigV4 vectors, validation, parsing, retries, credentials, streams, and state transitions |
-| Property tests | `tests/properties.rs` | Generated keys, URLs, canonical ordering, headers, pagination, and redaction |
+| Property tests | `tests/properties.rs` and `src/` | Generated public values, endpoint URLs, protocol ordering, pagination, and redaction |
 | In-process integration | `tests/mock_client.rs` | Exact wire behavior, errors, retries, timeouts, checksums, multipart cleanup, and redirect containment |
 | S3-compatible integration | `tests/s3_compat.rs` | End-to-end behavior against pinned MinIO, RustFS, and SeaweedFS releases |
 | AWS compatibility | `tests/aws_compat.rs` | Opt-in behavior against a configured AWS bucket |

@@ -13,10 +13,6 @@ use crate::retry::RetryPolicy;
 
 pub use crate::endpoint::AddressingStyle;
 
-const MIN_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
-const MAX_MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
-const MAX_MULTIPART_CONCURRENCY: usize = 64;
-
 /// Validated configuration used to construct an S3 client.
 #[derive(Clone)]
 pub struct S3Config {
@@ -31,10 +27,6 @@ pub struct S3Config {
     max_xml_response_size: usize,
     max_error_response_size: usize,
     retry_policy: RetryPolicy,
-    multipart_threshold: u64,
-    multipart_part_size: u64,
-    multipart_concurrency: usize,
-    max_multipart_in_flight_bytes: u64,
     user_agent: String,
     credentials_provider: Arc<dyn CredentialsProvider>,
 }
@@ -100,26 +92,6 @@ impl S3Config {
         &self.retry_policy
     }
 
-    /// Returns the object-size threshold available to application multipart policy.
-    pub fn multipart_threshold(&self) -> u64 {
-        self.multipart_threshold
-    }
-
-    /// Returns the configured multipart part size.
-    pub fn multipart_part_size(&self) -> u64 {
-        self.multipart_part_size
-    }
-
-    /// Returns the maximum number of concurrently buffered multipart parts.
-    pub fn multipart_concurrency(&self) -> usize {
-        self.multipart_concurrency
-    }
-
-    /// Returns the total byte budget for concurrently buffered multipart parts.
-    pub fn max_multipart_in_flight_bytes(&self) -> u64 {
-        self.max_multipart_in_flight_bytes
-    }
-
     /// Returns the HTTP user-agent value.
     pub fn user_agent(&self) -> &str {
         &self.user_agent
@@ -146,13 +118,6 @@ impl fmt::Debug for S3Config {
             .field("max_xml_response_size", &self.max_xml_response_size)
             .field("max_error_response_size", &self.max_error_response_size)
             .field("retry_policy", &self.retry_policy)
-            .field("multipart_threshold", &self.multipart_threshold)
-            .field("multipart_part_size", &self.multipart_part_size)
-            .field("multipart_concurrency", &self.multipart_concurrency)
-            .field(
-                "max_multipart_in_flight_bytes",
-                &self.max_multipart_in_flight_bytes,
-            )
             .field("user_agent", &self.user_agent)
             .field("credentials_provider", &"[REDACTED]")
             .finish()
@@ -173,10 +138,6 @@ pub struct S3ConfigBuilder {
     max_xml_response_size: usize,
     max_error_response_size: usize,
     retry_policy: RetryPolicy,
-    multipart_threshold: u64,
-    multipart_part_size: u64,
-    multipart_concurrency: usize,
-    max_multipart_in_flight_bytes: u64,
     user_agent: String,
     credentials_provider: Arc<dyn CredentialsProvider>,
 }
@@ -227,7 +188,10 @@ impl S3ConfigBuilder {
         self
     }
 
-    /// Sets the overall timeout across retries and cleanup.
+    /// Sets the overall timeout for one primitive S3 operation across retries.
+    ///
+    /// Managed multipart uploads instead use the transfer and cleanup deadlines
+    /// in [`crate::MultipartOptions`].
     pub fn operation_timeout(mut self, timeout: Duration) -> Self {
         self.operation_timeout = timeout;
         self
@@ -254,30 +218,6 @@ impl S3ConfigBuilder {
     /// Sets the retry policy.
     pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = policy;
-        self
-    }
-
-    /// Sets the object-size threshold available to application multipart policy.
-    pub fn multipart_threshold(mut self, bytes: u64) -> Self {
-        self.multipart_threshold = bytes;
-        self
-    }
-
-    /// Sets the multipart part size.
-    pub fn multipart_part_size(mut self, bytes: u64) -> Self {
-        self.multipart_part_size = bytes;
-        self
-    }
-
-    /// Sets the maximum multipart upload concurrency.
-    pub fn multipart_concurrency(mut self, concurrency: usize) -> Self {
-        self.multipart_concurrency = concurrency;
-        self
-    }
-
-    /// Sets the total byte budget for concurrently buffered multipart parts.
-    pub fn max_multipart_in_flight_bytes(mut self, bytes: u64) -> Self {
-        self.max_multipart_in_flight_bytes = bytes;
         self
     }
 
@@ -318,39 +258,15 @@ impl S3ConfigBuilder {
                     "{name} must be greater than zero"
                 )));
             }
+            if std::time::Instant::now().checked_add(timeout).is_none() {
+                return Err(S3Error::configuration(format!(
+                    "{name} is too large to represent as a deadline"
+                )));
+            }
         }
         if self.max_xml_response_size == 0 || self.max_error_response_size == 0 {
             return Err(S3Error::configuration(
                 "response body limits must be greater than zero",
-            ));
-        }
-        if !(MIN_MULTIPART_PART_SIZE..=MAX_MULTIPART_PART_SIZE).contains(&self.multipart_part_size)
-        {
-            return Err(S3Error::configuration(
-                "multipart part size must be between 5 MiB and 5 GiB",
-            ));
-        }
-        if self.multipart_threshold < self.multipart_part_size {
-            return Err(S3Error::configuration(
-                "multipart threshold must not be smaller than multipart part size",
-            ));
-        }
-        if !(1..=MAX_MULTIPART_CONCURRENCY).contains(&self.multipart_concurrency) {
-            return Err(S3Error::configuration(
-                "multipart concurrency must be between 1 and 64",
-            ));
-        }
-        let in_flight_bytes = self
-            .multipart_part_size
-            .checked_mul(
-                u64::try_from(self.multipart_concurrency).map_err(|_| {
-                    S3Error::configuration("multipart concurrency does not fit in u64")
-                })?,
-            )
-            .ok_or_else(|| S3Error::configuration("multipart in-flight byte budget overflow"))?;
-        if in_flight_bytes > self.max_multipart_in_flight_bytes {
-            return Err(S3Error::configuration(
-                "multipart part size times concurrency exceeds the in-flight byte budget",
             ));
         }
         HeaderValue::from_str(&self.user_agent)
@@ -375,10 +291,6 @@ impl S3ConfigBuilder {
             max_xml_response_size: self.max_xml_response_size,
             max_error_response_size: self.max_error_response_size,
             retry_policy: self.retry_policy,
-            multipart_threshold: self.multipart_threshold,
-            multipart_part_size: self.multipart_part_size,
-            multipart_concurrency: self.multipart_concurrency,
-            max_multipart_in_flight_bytes: self.max_multipart_in_flight_bytes,
             user_agent: self.user_agent,
             credentials_provider: self.credentials_provider,
         })
@@ -400,10 +312,6 @@ impl Default for S3ConfigBuilder {
             max_xml_response_size: 1024 * 1024,
             max_error_response_size: 64 * 1024,
             retry_policy: RetryPolicy::default(),
-            multipart_threshold: 16 * 1024 * 1024,
-            multipart_part_size: 8 * 1024 * 1024,
-            multipart_concurrency: 4,
-            max_multipart_in_flight_bytes: 64 * 1024 * 1024,
             user_agent: format!("s3-wire/{}", env!("CARGO_PKG_VERSION")),
             credentials_provider: Arc::new(EnvironmentCredentialsProvider::new()),
         }
@@ -440,14 +348,6 @@ mod tests {
         );
         assert!(
             S3Config::builder()
-                .bucket("bucket")
-                .multipart_part_size(64 * 1024 * 1024)
-                .multipart_concurrency(2)
-                .build()
-                .is_err()
-        );
-        assert!(
-            S3Config::builder()
                 .endpoint(endpoint)
                 .allow_http_for_local_testing()
                 .bucket("bucket")
@@ -457,18 +357,11 @@ mod tests {
     }
 
     #[test]
-    fn multipart_memory_bounds_are_validated() {
+    fn timeouts_must_fit_in_an_instant_deadline() {
         assert!(
             S3Config::builder()
                 .bucket("bucket")
-                .multipart_part_size(MIN_MULTIPART_PART_SIZE - 1)
-                .build()
-                .is_err()
-        );
-        assert!(
-            S3Config::builder()
-                .bucket("bucket")
-                .multipart_concurrency(MAX_MULTIPART_CONCURRENCY + 1)
+                .operation_timeout(Duration::MAX)
                 .build()
                 .is_err()
         );

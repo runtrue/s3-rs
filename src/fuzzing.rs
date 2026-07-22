@@ -8,7 +8,6 @@ use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use time::{OffsetDateTime, macros::datetime};
 
-use crate::client::effective_concurrency;
 use crate::operation::ObjectKey;
 use crate::protocol::{
     CompleteMultipartResponse, CopyObjectResponse, parse_complete_multipart_upload,
@@ -141,15 +140,6 @@ pub async fn consume_byte_stream(bytes: Bytes) -> Result<usize, HarnessError> {
         .await
         .map(|collected| collected.to_bytes().len())
         .map_err(|_| HarnessError)
-}
-
-/// Calculates the bounded multipart scheduler concurrency.
-pub fn multipart_concurrency(
-    configured: usize,
-    byte_budget: u64,
-    part_size: u64,
-) -> Result<usize, HarnessError> {
-    effective_concurrency(configured, byte_budget, part_size).map_err(|_| HarnessError)
 }
 
 /// Validates an object key and returns its encoded length after endpoint construction.

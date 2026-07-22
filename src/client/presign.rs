@@ -35,11 +35,7 @@ impl S3Client {
         key: &ObjectKey,
         expires: Duration,
     ) -> Result<PresignedUrl, S3Error> {
-        let target = self.inner.config.endpoint().object_url(
-            self.inner.config.bucket(),
-            Some(key.as_str()),
-            self.inner.config.addressing_style(),
-        )?;
+        let target = self.operation_target(Some(key.as_str()))?;
         let credentials = self
             .inner
             .config

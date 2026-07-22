@@ -67,7 +67,10 @@ measure_project() {
 
 project_version() {
     case "$1" in
-        s3-wire) printf '%s\n' '0.1.0 (local path)' ;;
+        s3-wire|s3-wire-http2)
+            version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repository_dir/Cargo.toml" | head -1)
+            printf '%s (local path)\n' "$version"
+            ;;
         aws-sdk-s3) printf '%s\n' '1.138.1' ;;
         rust-s3) printf '%s\n' '0.37.2' ;;
     esac
@@ -76,6 +79,7 @@ project_version() {
 project_features() {
     case "$1" in
         s3-wire) jq -cn '["default-features=false"]' ;;
+        s3-wire-http2) jq -cn '["default-features=false","http2"]' ;;
         aws-sdk-s3) jq -cn '["default-features=false","behavior-version-latest","default-https-client","http-1x","rt-tokio","rustls"]' ;;
         rust-s3) jq -cn '["default-features=false","tokio-rustls-tls"]' ;;
     esac
@@ -100,10 +104,12 @@ source_sha256=$(
 )
 
 measure_project s3-wire compare-s3-wire > "$measurement_dir/s3-wire.json"
+measure_project s3-wire-http2 compare-s3-wire-http2 > "$measurement_dir/s3-wire-http2.json"
 measure_project aws-sdk-s3 compare-aws-sdk-s3 > "$measurement_dir/aws-sdk-s3.json"
 measure_project rust-s3 compare-rust-s3 > "$measurement_dir/rust-s3.json"
 projects=$(jq -s '.' \
     "$measurement_dir/s3-wire.json" \
+    "$measurement_dir/s3-wire-http2.json" \
     "$measurement_dir/aws-sdk-s3.json" \
     "$measurement_dir/rust-s3.json")
 
@@ -142,14 +148,14 @@ jq -n \
     printf '|---|---:|---|---:|---:|---:|---:|\n'
     jq -r '.projects[] | "| \(.name) | \(.version) | `\(.features | join(", "))` | \(.dependency_packages) | \(.clean_build_seconds) s | \(.incremental_rebuild_seconds) s | \(.binary_bytes) bytes |"' "$result_file"
     printf '\n## Method\n\n'
-    printf 'Each standalone binary constructs one client for the same region and bucket without making a request. '
+    printf 'Each standalone binary constructs one client and retains a HEAD-object operation for the same region, bucket, and key without sending it. '
     printf 'The two external versions were the newest crates.io releases when resolved on the measurement date and are exact-version pinned. '
     printf 'Every manifest disables default features and lists available TLS/runtime features explicitly; `s3-wire` does not currently feature-gate its runtime or TLS backend. '
-    printf 'All three use `opt-level=3`, thin LTO, one codegen unit, `panic="abort"`, symbol stripping, and incremental compilation. '
+    printf 'All four use `opt-level=3`, thin LTO, one codegen unit, `panic="abort"`, symbol stripping, and incremental compilation. '
     printf "The clean timing removes only that project's target directory; registry sources and the Cargo download cache remain warm. "
     printf 'The incremental timing touches only the comparison binary source before rebuilding. Dependency counts include unique normal and build package specifications selected for the host target, not dev dependencies.\n\n'
     printf '## Caveats\n\n'
-    printf 'This measures three minimal construction programs, not API completeness, runtime throughput, memory use, or operational correctness. '
+    printf 'This measures four minimal read-operation programs, not API completeness, runtime throughput, memory use, or operational correctness. '
     printf 'Feature sets are aligned around Tokio and Rustls where each crate permits it, but crate architectures and feature boundaries differ. '
     printf 'Build timings depend on this machine, filesystem, process load, and warm registry/download caches. '
     printf 'The local `s3-wire` path dependency represents the checked-out source, while external dependencies are exact-version pinned and every comparison has a committed lockfile. '

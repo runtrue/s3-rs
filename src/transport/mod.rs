@@ -36,18 +36,34 @@ impl Transport {
 
         // WebPKI roots and rustls' normal hostname verification are always used
         // for HTTPS. Plain HTTP is available only through this explicit switch.
-        let builder = HttpsConnectorBuilder::new().with_webpki_roots();
+        #[cfg(feature = "http2")]
         let connector = if allow_http {
-            builder
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
                 .https_or_http()
                 .enable_http1()
                 .enable_http2()
                 .wrap_connector(http)
         } else {
-            builder
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
                 .https_only()
                 .enable_http1()
                 .enable_http2()
+                .wrap_connector(http)
+        };
+        #[cfg(not(feature = "http2"))]
+        let connector = if allow_http {
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_or_http()
+                .enable_http1()
+                .wrap_connector(http)
+        } else {
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_only()
+                .enable_http1()
                 .wrap_connector(http)
         };
         let client = Client::builder(TokioExecutor::new()).build(connector);

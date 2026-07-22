@@ -40,6 +40,9 @@ Run the transfer and RSS harness using [`tools/perf/README.md`](../tools/perf/RE
 ./comparisons/size/measure.sh
 ```
 
+The comparison harness retains a representative HEAD operation and records
+separate HTTP/1.1-only and HTTP/2-enabled `s3-wire` binaries.
+
 Comparison-only dependencies remain isolated under `comparisons/` and are not included in the published crate.
 
 ## Recording a new baseline
@@ -60,6 +63,10 @@ Only compare runs when those inputs are sufficiently aligned.
 
 File-backed PutObject and managed multipart create disk snapshots, so memory does not grow with the complete source size. They do require enough protected temporary storage for the source.
 
-Multipart buffering is bounded by part size, concurrency, and the total in-flight byte limit. HTTP buffers, runtime state, allocator behavior, and application-owned values add overhead beyond that configured budget. In-memory multipart also retains the caller's complete `bytes::Bytes` value.
+Multipart buffering is bounded by the part size times concurrency reported by
+`MultipartOptions::maximum_buffered_bytes()`. HTTP buffers, runtime state,
+allocator behavior, and application-owned values add overhead beyond that
+derived bound. In-memory multipart also retains the caller's complete
+`bytes::Bytes` value.
 
 Streaming GET applies backpressure and does not aggregate the response inside the client. Callers can still grow memory without bound if they retain every yielded chunk.

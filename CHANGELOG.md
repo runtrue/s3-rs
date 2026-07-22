@@ -4,6 +4,24 @@ This project records user-visible changes in this file and follows semantic vers
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-22
+
+### Changed
+
+- Managed multipart uploads now use request-scoped `MultipartOptions` with a
+  derived buffer bound, one transfer deadline, and a separate cleanup deadline.
+- HTTP/1.1 is the lightweight default transport; HTTP/2 is available through
+  the `http2` feature.
+- Request and response bodies use concrete stream types, implementation modules
+  and endpoint URLs are private, and supported types remain available from the
+  crate root.
+- File-backed PUT and multipart sources share one immutable snapshot
+  implementation, and successful multipart responses are drained under a small
+  bound for connection reuse.
+- Operation deadlines now include upload-body preparation, in-memory hashing is
+  cooperative, multipart cleanup quiesces transmitted part requests before
+  aborting, and service status is exposed as a crate-independent numeric code.
+
 ## [0.1.0] - 2026-07-21
 
 ### Added

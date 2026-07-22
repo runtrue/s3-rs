@@ -1,9 +1,10 @@
 mod request;
 mod response;
 
+pub(super) use crate::client::request::{insert_header, insert_optional_header};
 pub(super) use request::{
-    copy_source_header, insert_conditions, insert_header, insert_optional_header,
-    insert_upload_checksum, insert_user_metadata, optional_query, push_optional_query,
+    copy_source_header, insert_conditions, insert_upload_checksum, insert_user_metadata,
+    optional_query, push_optional_query,
 };
 pub(super) use response::{
     merge_checksum, parse_bool_header, parse_checksum, parse_content_range, parse_object_metadata,

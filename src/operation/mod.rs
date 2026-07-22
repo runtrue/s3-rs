@@ -9,8 +9,8 @@ pub use multipart::{
     AbortMultipartUploadRequest, CompleteMultipartUploadOutput, CompleteMultipartUploadRequest,
     CompletedPart, CreateMultipartUploadOutput, CreateMultipartUploadRequest,
     ListMultipartUploadsOutput, ListMultipartUploadsRequest, ManagedMultipartUploadRequest,
-    MultipartError, MultipartUpload, MultipartUploadEntry, PartNumber, UploadId, UploadIdError,
-    UploadPartOutput, UploadPartRequest,
+    MultipartError, MultipartOptions, MultipartUpload, MultipartUploadEntry, PartNumber, UploadId,
+    UploadIdError, UploadPartOutput, UploadPartRequest,
 };
 pub use object::{
     CopyObjectOutput, CopyObjectRequest, CopySource, DeleteError, DeleteObjectOutput,

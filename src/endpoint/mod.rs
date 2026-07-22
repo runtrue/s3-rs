@@ -25,7 +25,7 @@ pub enum AddressingStyle {
 /// or collapse repeated slashes. This matters because every byte in an S3 object
 /// key is significant and is covered by the request signature.
 #[derive(Clone, Eq, PartialEq)]
-pub struct EndpointUrl {
+pub(crate) struct EndpointUrl {
     serialized: String,
     scheme: String,
     authority: String,
@@ -47,22 +47,22 @@ impl EndpointUrl {
     }
 
     /// Returns the URL scheme.
-    pub fn scheme(&self) -> &str {
+    pub(crate) fn scheme(&self) -> &str {
         &self.scheme
     }
 
     /// Returns the URL authority, including an explicit port when present.
-    pub fn authority(&self) -> &str {
+    pub(crate) fn authority(&self) -> &str {
         &self.authority
     }
 
     /// Returns the exact encoded path and optional query sent on the wire.
-    pub fn path_and_query(&self) -> &str {
+    pub(crate) fn path_and_query(&self) -> &str {
         &self.path_and_query
     }
 
     /// Returns the complete absolute URL without changing its request target.
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.serialized
     }
 
@@ -195,8 +195,12 @@ impl Endpoint {
         Self::new(format!("https://s3.{region}.amazonaws.com"))
     }
 
-    /// Returns the validated endpoint URL.
-    pub fn url(&self) -> &EndpointUrl {
+    /// Returns the validated endpoint as an absolute URL string.
+    pub fn as_str(&self) -> &str {
+        self.url.as_str()
+    }
+
+    pub(crate) fn url(&self) -> &EndpointUrl {
         &self.url
     }
 
@@ -211,7 +215,7 @@ impl Endpoint {
     ///
     /// Returns an error when the bucket is invalid for the selected addressing
     /// style or the resulting URL is not a valid absolute HTTP URI.
-    pub fn object_url(
+    pub(crate) fn object_url(
         &self,
         bucket: &str,
         object_key: Option<&str>,

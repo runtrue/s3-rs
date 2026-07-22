@@ -1,11 +1,139 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use bytes::Bytes;
 
 use super::{CompletedPart, MultipartError, UploadId};
 use crate::operation::{ChecksumAlgorithm, ObjectKey, RequestIds};
+
+const MIN_PART_SIZE: u64 = 5 * 1024 * 1024;
+const MAX_PART_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+const MAX_CONCURRENCY: usize = 64;
+
+/// Validated resource and time bounds for one managed multipart upload.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MultipartOptions {
+    part_size: u64,
+    concurrency: usize,
+    transfer_timeout: Duration,
+    cleanup_timeout: Duration,
+}
+
+impl MultipartOptions {
+    /// Creates multipart options with bounded transfer and cleanup defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `part_size` is between 5 MiB and 5 GiB and
+    /// `concurrency` is between 1 and 64.
+    pub fn new(part_size: u64, concurrency: usize) -> Result<Self, crate::error::S3Error> {
+        if !(MIN_PART_SIZE..=MAX_PART_SIZE).contains(&part_size) {
+            return Err(crate::error::S3Error::configuration(
+                "multipart part size must be between 5 MiB and 5 GiB",
+            ));
+        }
+        if !(1..=MAX_CONCURRENCY).contains(&concurrency) {
+            return Err(crate::error::S3Error::configuration(
+                "multipart concurrency must be between 1 and 64",
+            ));
+        }
+        part_size
+            .checked_mul(u64::try_from(concurrency).map_err(|_| {
+                crate::error::S3Error::configuration("multipart concurrency does not fit in u64")
+            })?)
+            .ok_or_else(|| {
+                crate::error::S3Error::configuration("multipart buffered byte bound overflow")
+            })?;
+        Ok(Self {
+            part_size,
+            concurrency,
+            transfer_timeout: Duration::from_secs(5 * 60),
+            cleanup_timeout: Duration::from_secs(30),
+        })
+    }
+
+    /// Sets the deadline for preparation, upload, and completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `timeout` is zero.
+    pub fn with_transfer_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> Result<Self, crate::error::S3Error> {
+        if timeout.is_zero() {
+            return Err(crate::error::S3Error::configuration(
+                "multipart transfer timeout must be greater than zero",
+            ));
+        }
+        validate_deadline(timeout, "multipart transfer timeout")?;
+        self.transfer_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Sets the separate deadline for quiescing in-flight parts and aborting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `timeout` is zero.
+    pub fn with_cleanup_timeout(
+        mut self,
+        timeout: Duration,
+    ) -> Result<Self, crate::error::S3Error> {
+        if timeout.is_zero() {
+            return Err(crate::error::S3Error::configuration(
+                "multipart cleanup timeout must be greater than zero",
+            ));
+        }
+        validate_deadline(timeout, "multipart cleanup timeout")?;
+        self.cleanup_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Returns the size of each part except the final part.
+    pub const fn part_size(self) -> u64 {
+        self.part_size
+    }
+
+    /// Returns the maximum number of part requests in flight.
+    pub const fn concurrency(self) -> usize {
+        self.concurrency
+    }
+
+    /// Returns the derived maximum bytes retained by in-flight part buffers.
+    pub fn maximum_buffered_bytes(self) -> u64 {
+        self.part_size * u64::try_from(self.concurrency).expect("validated concurrency fits in u64")
+    }
+
+    /// Returns the transfer deadline duration.
+    pub const fn transfer_timeout(self) -> Duration {
+        self.transfer_timeout
+    }
+
+    /// Returns the part-quiescing and abort cleanup deadline duration.
+    pub const fn cleanup_timeout(self) -> Duration {
+        self.cleanup_timeout
+    }
+}
+
+fn validate_deadline(timeout: Duration, name: &str) -> Result<(), crate::error::S3Error> {
+    std::time::Instant::now()
+        .checked_add(timeout)
+        .map(|_| ())
+        .ok_or_else(|| {
+            crate::error::S3Error::configuration(format!(
+                "{name} is too large to represent as a deadline"
+            ))
+        })
+}
+
+impl Default for MultipartOptions {
+    fn default() -> Self {
+        Self::new(8 * 1024 * 1024, 4).expect("default multipart options are valid")
+    }
+}
 
 /// Request to initiate a multipart upload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,13 +214,14 @@ pub(crate) enum MultipartUploadSource {
 /// Request for a bounded, automatically cleaned-up multipart upload.
 ///
 /// In-memory sources retain the caller's complete byte buffer for the duration
-/// of the operation. File sources use only the configured in-flight part byte
-/// budget in memory; their immutable snapshot is disk-backed.
+/// of the operation. File sources retain at most the derived in-flight part
+/// byte bound in memory; their immutable snapshot is disk-backed.
 pub struct ManagedMultipartUploadRequest {
     pub(crate) key: ObjectKey,
     pub(crate) source: MultipartUploadSource,
     pub(crate) content_type: Option<String>,
     pub(crate) user_metadata: BTreeMap<String, String>,
+    pub(crate) options: MultipartOptions,
 }
 
 impl ManagedMultipartUploadRequest {
@@ -103,6 +232,7 @@ impl ManagedMultipartUploadRequest {
             source: MultipartUploadSource::Bytes(bytes.into()),
             content_type: None,
             user_metadata: BTreeMap::new(),
+            options: MultipartOptions::default(),
         }
     }
 
@@ -116,6 +246,7 @@ impl ManagedMultipartUploadRequest {
             source: MultipartUploadSource::File(path.as_ref().to_owned()),
             content_type: None,
             user_metadata: BTreeMap::new(),
+            options: MultipartOptions::default(),
         }
     }
 
@@ -129,6 +260,17 @@ impl ManagedMultipartUploadRequest {
     pub fn with_metadata(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.user_metadata.insert(name.into(), value.into());
         self
+    }
+
+    /// Applies validated resource and time bounds to this upload.
+    pub fn with_options(mut self, options: MultipartOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Returns this upload's resource and time bounds.
+    pub const fn options(&self) -> MultipartOptions {
+        self.options
     }
 
     /// Returns the destination object key.
@@ -150,6 +292,7 @@ impl fmt::Debug for ManagedMultipartUploadRequest {
                 },
             )
             .field("content_type", &self.content_type)
+            .field("options", &self.options)
             .field(
                 "user_metadata_names",
                 &self.user_metadata.keys().collect::<Vec<_>>(),
