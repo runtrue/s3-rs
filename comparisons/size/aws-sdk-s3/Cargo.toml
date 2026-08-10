@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-aws-sdk-s3 = { version = "=1.139.0", default-features = false, features = ["behavior-version-latest", "default-https-client", "http-1x", "rt-tokio", "rustls"] }
+aws-sdk-s3 = { version = "=1.141.0", default-features = false, features = ["behavior-version-latest", "default-https-client", "http-1x", "rt-tokio", "rustls"] }
 
 [profile.release]
 opt-level = 3
