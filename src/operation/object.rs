@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, fmt, num::NonZeroU16};
 
+use http::HeaderMap;
+
 use super::{
     ByteRange, Checksum, ChecksumAlgorithm, ChecksumType, Conditions, ObjectKey, RequestIds,
 };
@@ -27,19 +29,26 @@ pub struct ObjectMetadata {
 }
 
 /// Request to upload one object.
+#[derive(derive_more::Debug)]
 pub struct PutObjectRequest {
     /// Destination object key.
     pub key: ObjectKey,
     /// Upload body. Replayability is determined by its selected source.
+    #[debug("{:?}", "<stream>")]
     pub body: ByteStream,
     /// Optional media type.
     pub content_type: Option<String>,
     /// Caller-defined object metadata.
+    #[debug("{:?}", self.user_metadata.keys().collect::<Vec<_>>())]
     pub user_metadata: BTreeMap<String, String>,
     /// Preconditions for the write.
     pub conditions: Conditions,
     /// Ask S3 to calculate or validate this checksum algorithm.
     pub checksum_algorithm: Option<ChecksumAlgorithm>,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl PutObjectRequest {
@@ -52,21 +61,14 @@ impl PutObjectRequest {
             user_metadata: BTreeMap::new(),
             conditions: Conditions::default(),
             checksum_algorithm: None,
+            headers: HeaderMap::new(),
         }
     }
-}
 
-impl fmt::Debug for PutObjectRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PutObjectRequest")
-            .field("key", &self.key)
-            .field("body", &"<stream>")
-            .field("content_type", &self.content_type)
-            .field("user_metadata", &self.user_metadata)
-            .field("conditions", &self.conditions)
-            .field("checksum_algorithm", &self.checksum_algorithm)
-            .finish()
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -84,7 +86,7 @@ pub struct PutObjectOutput {
 }
 
 /// Request to download one object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct GetObjectRequest {
     /// Object key.
     pub key: ObjectKey,
@@ -94,6 +96,10 @@ pub struct GetObjectRequest {
     pub conditions: Conditions,
     /// Specific object version to retrieve.
     pub version_id: Option<String>,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl GetObjectRequest {
@@ -104,7 +110,14 @@ impl GetObjectRequest {
             range: None,
             conditions: Conditions::default(),
             version_id: None,
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -130,7 +143,7 @@ impl fmt::Debug for GetObjectOutput {
 }
 
 /// Request to inspect object metadata without retrieving the body.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct HeadObjectRequest {
     /// Object key.
     pub key: ObjectKey,
@@ -138,6 +151,10 @@ pub struct HeadObjectRequest {
     pub conditions: Conditions,
     /// Specific object version to inspect.
     pub version_id: Option<String>,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl HeadObjectRequest {
@@ -147,7 +164,14 @@ impl HeadObjectRequest {
             key,
             conditions: Conditions::default(),
             version_id: None,
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -155,7 +179,7 @@ impl HeadObjectRequest {
 pub type HeadObjectOutput = ObjectMetadata;
 
 /// Request to delete one object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct DeleteObjectRequest {
     /// Object key.
     pub key: ObjectKey,
@@ -163,6 +187,10 @@ pub struct DeleteObjectRequest {
     pub version_id: Option<String>,
     /// Optional entity-tag precondition.
     pub if_match: Option<String>,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl DeleteObjectRequest {
@@ -172,7 +200,14 @@ impl DeleteObjectRequest {
             key,
             version_id: None,
             if_match: None,
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -187,20 +222,46 @@ pub struct DeleteObjectOutput {
     pub request_ids: RequestIds,
 }
 
+/// One object selected for a multi-object delete request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteObjectIdentifier {
+    /// Object key.
+    pub key: ObjectKey,
+    /// Specific version to remove.
+    pub version_id: Option<String>,
+    /// Optional entity-tag precondition.
+    pub if_match: Option<String>,
+}
+
+impl DeleteObjectIdentifier {
+    /// Constructs an identifier for the latest object version.
+    pub fn new(key: ObjectKey) -> Self {
+        Self {
+            key,
+            version_id: None,
+            if_match: None,
+        }
+    }
+}
+
 /// Maximum number of entries accepted by S3's multi-object delete API.
 pub const MAX_DELETE_OBJECTS: usize = 1_000;
 
 /// A validated multi-object delete request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct DeleteObjectsRequest {
-    objects: Vec<DeleteObjectRequest>,
+    objects: Vec<DeleteObjectIdentifier>,
     /// Suppresses per-key success entries when true.
     pub quiet: bool,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl DeleteObjectsRequest {
     /// Validates that the batch contains between one and 1,000 entries.
-    pub fn new(objects: Vec<DeleteObjectRequest>) -> Result<Self, DeleteObjectsError> {
+    pub fn new(objects: Vec<DeleteObjectIdentifier>) -> Result<Self, DeleteObjectsError> {
         if objects.is_empty() {
             return Err(DeleteObjectsError::Empty);
         }
@@ -213,11 +274,18 @@ impl DeleteObjectsRequest {
         Ok(Self {
             objects,
             quiet: false,
+            headers: HeaderMap::new(),
         })
     }
 
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
+
     /// Returns the validated delete entries.
-    pub fn objects(&self) -> &[DeleteObjectRequest] {
+    pub fn objects(&self) -> &[DeleteObjectIdentifier] {
         &self.objects
     }
 }
@@ -306,7 +374,7 @@ pub enum CopyMetadataDirective {
 }
 
 /// Request to copy an object within S3.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct CopyObjectRequest {
     /// Copy source.
     pub source: CopySource,
@@ -315,7 +383,18 @@ pub struct CopyObjectRequest {
     /// Preconditions evaluated against the source object.
     pub source_conditions: Conditions,
     /// Whether to copy or completely replace source metadata.
+    #[debug(
+        "{:?}",
+        match self.metadata {
+            CopyMetadataDirective::Copy => "copy",
+            CopyMetadataDirective::Replace { .. } => "replace",
+        }
+    )]
     pub metadata: CopyMetadataDirective,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl CopyObjectRequest {
@@ -326,7 +405,14 @@ impl CopyObjectRequest {
             destination,
             source_conditions: Conditions::default(),
             metadata: CopyMetadataDirective::Copy,
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -383,7 +469,7 @@ impl Default for PageSize {
 }
 
 /// Request for one `ListObjectsV2` page.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default, derive_more::Debug, Eq, PartialEq)]
 pub struct ListObjectsV2Request {
     /// Only keys beginning with this exact prefix are returned.
     pub prefix: Option<String>,
@@ -397,6 +483,18 @@ pub struct ListObjectsV2Request {
     pub max_keys: PageSize,
     /// Requests owner information for every entry.
     pub fetch_owner: bool,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
+}
+
+impl ListObjectsV2Request {
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
 }
 
 /// One object returned by `ListObjectsV2`.
@@ -449,12 +547,24 @@ mod tests {
         );
         let key = ObjectKey::new("key").unwrap();
         let too_many = (0..=MAX_DELETE_OBJECTS)
-            .map(|_| DeleteObjectRequest::new(key.clone()))
+            .map(|_| DeleteObjectIdentifier::new(key.clone()))
             .collect();
         assert!(matches!(
             DeleteObjectsRequest::new(too_many),
             Err(DeleteObjectsError::TooMany { .. })
         ));
+    }
+
+    #[test]
+    fn custom_header_values_are_redacted() {
+        let mut request = GetObjectRequest::new(ObjectKey::new("key").unwrap());
+        request.headers.insert(
+            "x-amz-server-side-encryption-customer-key",
+            "sentinel-sse-c-key".parse().unwrap(),
+        );
+        let debug = format!("{request:?}");
+        assert!(debug.contains(r#"headers: "<redacted>""#));
+        assert!(!debug.contains("sentinel-sse-c-key"));
     }
 
     #[test]

@@ -9,21 +9,363 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bytes::Bytes;
 use futures_util::{StreamExt as _, stream};
-use http::StatusCode;
+use http::{HeaderMap, StatusCode};
 use s3_wire::{
-    ByteStream, ChecksumAlgorithm, CompleteMultipartUploadRequest, CompletedPart, Conditions,
-    CopyMetadataDirective, CopyObjectRequest, CopyPartRange, CopySource, Credentials,
-    DeleteObjectRequest, Endpoint, ErrorCategory, GetObjectRequest, ListObjectsV2Request,
-    ListPartsRequest, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, PartNumber,
-    PutObjectRequest, RequestEvent, RequestEventKind, RequestObserver, RetryPolicy,
-    RetryStopReason, S3Client, S3Config, S3Error, StaticCredentialsProvider, TimeoutPhase,
-    UploadId, UploadPartCopyRequest,
+    AbortMultipartUploadRequest, ByteStream, ChecksumAlgorithm, CompleteMultipartUploadRequest,
+    CompletedPart, Conditions, CopyMetadataDirective, CopyObjectRequest, CopyPartRange, CopySource,
+    CreateMultipartUploadRequest, Credentials, DeleteObjectIdentifier, DeleteObjectRequest,
+    DeleteObjectsRequest, Endpoint, ErrorCategory, GetObjectRequest, HeadObjectRequest,
+    ListMultipartUploadsRequest, ListObjectsV2Request, ListPartsRequest, ManagedMultipartHeaders,
+    ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, PartNumber, PutObjectRequest,
+    RequestEvent, RequestEventKind, RequestObserver, RetryPolicy, RetryStopReason, S3Client,
+    S3Config, S3Error, StaticCredentialsProvider, TimeoutPhase, UploadId, UploadPartCopyRequest,
+    UploadPartRequest,
 };
 use sha2::{Digest as _, Sha256};
 
 use support::{MockServer, Reply};
 
 const MINIMUM_PART_SIZE: usize = 5 * 1024 * 1024;
+
+#[tokio::test]
+async fn custom_headers_are_signed_and_preserved_across_retries() {
+    let server = MockServer::start(|attempt, _| {
+        if attempt == 1 {
+            Reply::empty(StatusCode::INTERNAL_SERVER_ERROR)
+        } else {
+            Reply::empty(StatusCode::OK)
+        }
+    })
+    .await;
+    let mut headers = HeaderMap::new();
+    headers.append("x-example", "one".parse().unwrap());
+    headers.append("x-example", "two".parse().unwrap());
+    headers.insert("user-agent", "custom-agent".parse().unwrap());
+    let request = PutObjectRequest::new(key("custom-headers"), ByteStream::from_bytes("body"))
+        .with_headers(headers);
+
+    client(&server).put_object(request).await.unwrap();
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        assert_eq!(request.header_values("x-example"), ["one", "two"]);
+        assert_eq!(request.header("user-agent"), Some("custom-agent"));
+        assert!(
+            request
+                .header("authorization")
+                .is_some_and(|value| value.contains("x-example") && value.contains("user-agent"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_primitive_operation_sends_and_signs_custom_headers() {
+    let server = MockServer::start(|attempt, _| match attempt {
+        5 => Reply::xml(StatusCode::OK, b"<DeleteResult/>".to_vec()),
+        6 => Reply::xml(
+            StatusCode::OK,
+            b"<CopyObjectResult><ETag>&quot;copy&quot;</ETag></CopyObjectResult>".to_vec(),
+        ),
+        7 => Reply::xml(
+            StatusCode::OK,
+            b"<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated></ListBucketResult>".to_vec(),
+        ),
+        8 => Reply::xml(
+            StatusCode::OK,
+            b"<InitiateMultipartUploadResult><Key>multipart</Key><UploadId>upload</UploadId></InitiateMultipartUploadResult>".to_vec(),
+        ),
+        9 => Reply::Full {
+            status: StatusCode::OK,
+            headers: vec![("etag".to_owned(), "\"part\"".to_owned())],
+            body: Vec::new(),
+        },
+        10 => Reply::xml(
+            StatusCode::OK,
+            b"<CopyPartResult><ETag>&quot;part-copy&quot;</ETag></CopyPartResult>".to_vec(),
+        ),
+        11 => Reply::xml(
+            StatusCode::OK,
+            b"<CompleteMultipartUploadResult><Key>multipart</Key></CompleteMultipartUploadResult>".to_vec(),
+        ),
+        13 => Reply::xml(
+            StatusCode::OK,
+            b"<ListMultipartUploadsResult><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>".to_vec(),
+        ),
+        14 => Reply::xml(
+            StatusCode::OK,
+            b"<ListPartsResult><IsTruncated>false</IsTruncated></ListPartsResult>".to_vec(),
+        ),
+        _ => Reply::empty(StatusCode::OK),
+    })
+    .await;
+    let client = client(&server);
+    let custom = |headers: &mut HeaderMap, operation: &'static str| {
+        headers.insert("x-operation", operation.parse().unwrap());
+    };
+
+    let mut put = PutObjectRequest::new(key("put"), ByteStream::from_bytes("body"));
+    custom(&mut put.headers, "put");
+    client.put_object(put).await.unwrap();
+    let mut get = GetObjectRequest::new(key("get"));
+    custom(&mut get.headers, "get");
+    client.get_object(get).await.unwrap();
+    let mut head = HeadObjectRequest::new(key("head"));
+    custom(&mut head.headers, "head");
+    client.head_object(head).await.unwrap();
+    let mut delete = DeleteObjectRequest::new(key("delete"));
+    custom(&mut delete.headers, "delete");
+    client.delete_object(delete).await.unwrap();
+    let mut deletes =
+        DeleteObjectsRequest::new(vec![DeleteObjectIdentifier::new(key("batch"))]).unwrap();
+    custom(&mut deletes.headers, "delete-objects");
+    client.delete_objects(deletes).await.unwrap();
+    let source = CopySource {
+        bucket: "source".to_owned(),
+        key: key("source"),
+        version_id: None,
+    };
+    let mut copy = CopyObjectRequest::new(source.clone(), key("copy"));
+    custom(&mut copy.headers, "copy");
+    client.copy_object(copy).await.unwrap();
+    let mut list = ListObjectsV2Request::default();
+    custom(&mut list.headers, "list-objects");
+    client.list_objects_v2(list).await.unwrap();
+    let upload_id = UploadId::new("upload").unwrap();
+    let mut create = CreateMultipartUploadRequest::new(key("multipart"));
+    custom(&mut create.headers, "create");
+    client.create_multipart_upload(create).await.unwrap();
+    let mut part = UploadPartRequest::new(
+        key("multipart"),
+        upload_id.clone(),
+        PartNumber::new(1).unwrap(),
+        ByteStream::from_bytes("part"),
+    );
+    custom(&mut part.headers, "upload-part");
+    client.upload_part(part).await.unwrap();
+    let mut part_copy = UploadPartCopyRequest::new(
+        key("multipart"),
+        upload_id.clone(),
+        PartNumber::new(2).unwrap(),
+        source,
+    );
+    custom(&mut part_copy.headers, "upload-part-copy");
+    client.upload_part_copy(part_copy).await.unwrap();
+    let mut complete = CompleteMultipartUploadRequest::new(
+        key("multipart"),
+        upload_id.clone(),
+        vec![CompletedPart::new(1, "\"part\"").unwrap()],
+    )
+    .unwrap();
+    custom(&mut complete.headers, "complete");
+    client.complete_multipart_upload(complete).await.unwrap();
+    let mut abort = AbortMultipartUploadRequest::new(key("multipart"), upload_id.clone());
+    custom(&mut abort.headers, "abort");
+    client.abort_multipart_upload(abort).await.unwrap();
+    let mut uploads = ListMultipartUploadsRequest::default();
+    custom(&mut uploads.headers, "list-uploads");
+    client.list_multipart_uploads(uploads).await.unwrap();
+    let mut parts = ListPartsRequest::new(key("multipart"), upload_id);
+    custom(&mut parts.headers, "list-parts");
+    client.list_parts(parts).await.unwrap();
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 14);
+    for request in requests {
+        assert!(request.header("x-operation").is_some());
+        assert!(
+            request
+                .header("authorization")
+                .is_some_and(|value| value.contains("x-operation"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn managed_multipart_headers_are_isolated_by_phase() {
+    let server = MockServer::start(|_, request| match request.method.as_str() {
+        "POST" if request.target.ends_with("?uploads=") => Reply::xml(
+            StatusCode::OK,
+            b"<InitiateMultipartUploadResult><Key>managed</Key><UploadId>upload</UploadId></InitiateMultipartUploadResult>".to_vec(),
+        ),
+        "PUT" => Reply::Full {
+            status: StatusCode::OK,
+            headers: vec![("etag".to_owned(), "\"part\"".to_owned())],
+            body: Vec::new(),
+        },
+        "POST" => Reply::xml(
+            StatusCode::OK,
+            b"<CompleteMultipartUploadResult><Key>managed</Key></CompleteMultipartUploadResult>".to_vec(),
+        ),
+        _ => unreachable!(),
+    })
+    .await;
+    let mut source = vec![0_u8; MINIMUM_PART_SIZE];
+    source.push(0);
+    let mut headers = ManagedMultipartHeaders::default();
+    headers
+        .create
+        .insert("x-phase-create", "yes".parse().unwrap());
+    headers
+        .upload_part
+        .insert("x-phase-part", "yes".parse().unwrap());
+    headers
+        .complete
+        .insert("x-phase-complete", "yes".parse().unwrap());
+    headers
+        .abort
+        .insert("x-phase-abort", "yes".parse().unwrap());
+    let request = ManagedMultipartUploadRequest::from_bytes(key("managed"), Bytes::from(source))
+        .with_options(
+            MultipartOptions::new(MINIMUM_PART_SIZE as u64, 2)
+                .expect("valid test multipart options"),
+        )
+        .with_headers(headers);
+
+    client(&server).multipart_upload(request).await.unwrap();
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 4);
+    let create = requests
+        .iter()
+        .find(|request| request.method == "POST" && request.target.ends_with("?uploads="))
+        .unwrap();
+    let complete = requests
+        .iter()
+        .find(|request| request.method == "POST" && request.target.contains("uploadId="))
+        .unwrap();
+    assert_eq!(create.header("x-phase-create"), Some("yes"));
+    assert_eq!(complete.header("x-phase-complete"), Some("yes"));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "PUT")
+            .count(),
+        2
+    );
+    for request in &requests {
+        let expected = match request.method.as_str() {
+            "PUT" => "x-phase-part",
+            "POST" if request.target.ends_with("?uploads=") => "x-phase-create",
+            "POST" => "x-phase-complete",
+            _ => unreachable!(),
+        };
+        for name in [
+            "x-phase-create",
+            "x-phase-part",
+            "x-phase-complete",
+            "x-phase-abort",
+        ] {
+            assert_eq!(request.header(name).is_some(), name == expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn managed_multipart_abort_uses_cleanup_headers_after_part_failure() {
+    let server = MockServer::start(|attempt, _| match attempt {
+        1 => Reply::xml(
+            StatusCode::OK,
+            b"<InitiateMultipartUploadResult><Key>managed</Key><UploadId>upload</UploadId></InitiateMultipartUploadResult>".to_vec(),
+        ),
+        2 => Reply::xml(
+            StatusCode::FORBIDDEN,
+            b"<Error><Code>AccessDenied</Code></Error>".to_vec(),
+        ),
+        3 => Reply::empty(StatusCode::NO_CONTENT),
+        _ => unreachable!(),
+    })
+    .await;
+    let mut request = ManagedMultipartUploadRequest::from_bytes(
+        key("managed"),
+        Bytes::from(vec![0_u8; MINIMUM_PART_SIZE]),
+    );
+    request
+        .headers
+        .create
+        .insert("x-phase-create", "yes".parse().unwrap());
+    request
+        .headers
+        .upload_part
+        .insert("x-phase-part", "yes".parse().unwrap());
+    request
+        .headers
+        .abort
+        .insert("x-phase-abort", "yes".parse().unwrap());
+
+    client(&server).multipart_upload(request).await.unwrap_err();
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2].header("x-phase-abort"), Some("yes"));
+    assert!(requests[2].header("x-phase-create").is_none());
+    assert!(requests[2].header("x-phase-part").is_none());
+}
+
+#[tokio::test]
+async fn managed_multipart_abort_uses_cleanup_headers_after_part_preparation_failure() {
+    let server = MockServer::start(|attempt, _| match attempt {
+        1 => Reply::xml(
+            StatusCode::OK,
+            b"<InitiateMultipartUploadResult><Key>managed</Key><UploadId>upload</UploadId></InitiateMultipartUploadResult>".to_vec(),
+        ),
+        2 => Reply::empty(StatusCode::NO_CONTENT),
+        _ => unreachable!(),
+    })
+    .await;
+    let mut request = ManagedMultipartUploadRequest::from_bytes(
+        key("managed"),
+        Bytes::from(vec![0_u8; MINIMUM_PART_SIZE]),
+    )
+    .with_checksum_algorithm(ChecksumAlgorithm::Crc32c)
+    .unwrap();
+    request.headers.upload_part.insert(
+        "x-amz-checksum-crc32c",
+        "should-not-appear".parse().unwrap(),
+    );
+    request
+        .headers
+        .abort
+        .insert("x-phase-abort", "yes".parse().unwrap());
+
+    let error = client(&server).multipart_upload(request).await.unwrap_err();
+
+    assert!(error.message().contains("x-amz-checksum-crc32c"));
+    assert!(!error.message().contains("should-not-appear"));
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "DELETE");
+    assert_eq!(requests[1].header("x-phase-abort"), Some("yes"));
+    assert!(requests[1].header("x-amz-checksum-crc32c").is_none());
+}
+
+#[tokio::test]
+async fn custom_header_collisions_fail_before_network_io() {
+    let server = MockServer::start(|_, _| Reply::empty(StatusCode::OK)).await;
+    let mut request = PutObjectRequest::new(key("collision"), ByteStream::from_bytes("body"));
+    request
+        .headers
+        .insert("content-type", "secret".parse().unwrap());
+    request.content_type = Some("text/plain".to_owned());
+
+    let error = client(&server).put_object(request).await.unwrap_err();
+    assert!(error.message().contains("content-type"));
+    assert!(!error.message().contains("secret"));
+
+    let mut managed = ManagedMultipartUploadRequest::from_bytes(
+        key("managed-collision"),
+        Bytes::from(vec![0_u8; MINIMUM_PART_SIZE]),
+    )
+    .with_content_type("text/plain");
+    managed
+        .headers
+        .create
+        .insert("content-type", "managed-secret".parse().unwrap());
+    let error = client(&server).multipart_upload(managed).await.unwrap_err();
+    assert!(error.message().contains("content-type"));
+    assert!(!error.message().contains("managed-secret"));
+    assert_eq!(server.request_count().await, 0);
+}
 
 fn key(value: &str) -> ObjectKey {
     ObjectKey::new(value).expect("valid test key")
@@ -264,6 +606,7 @@ async fn retries_embedded_copy_errors_returned_with_http_200() {
             destination: key("destination"),
             source_conditions: Conditions::default(),
             metadata: CopyMetadataDirective::Copy,
+            headers: HeaderMap::new(),
         })
         .await
         .expect("retryable embedded error is retried");
@@ -300,6 +643,7 @@ async fn retries_interrupted_collected_copy_responses() {
             destination: key("destination"),
             source_conditions: Conditions::default(),
             metadata: CopyMetadataDirective::Copy,
+            headers: HeaderMap::new(),
         })
         .await
         .expect("interrupted collected body is retried");
@@ -328,6 +672,7 @@ async fn does_not_retry_permanent_embedded_copy_errors() {
             destination: key("destination"),
             source_conditions: Conditions::default(),
             metadata: CopyMetadataDirective::Copy,
+            headers: HeaderMap::new(),
         })
         .await
         .expect_err("permanent embedded error fails the copy");
@@ -395,6 +740,7 @@ async fn copy_metadata_behavior_is_explicit_on_the_wire() {
                     .into_iter()
                     .collect(),
             },
+            headers: HeaderMap::new(),
         })
         .await
         .expect("copy succeeds");
@@ -706,7 +1052,7 @@ async fn rejects_repeated_pagination_tokens() {
 }
 
 #[tokio::test]
-async fn does_not_forward_credentials_to_a_custom_redirect_target() {
+async fn does_not_forward_credentials_or_custom_headers_to_a_custom_redirect_target() {
     let credential_sink = MockServer::start(|_, _| Reply::empty(StatusCode::NO_CONTENT)).await;
     let redirect_target = format!("{}/stolen", credential_sink.endpoint());
     let redirector = MockServer::start(move |_, _| Reply::Full {
@@ -718,13 +1064,23 @@ async fn does_not_forward_credentials_to_a_custom_redirect_target() {
         body: Vec::new(),
     })
     .await;
+    let mut request = DeleteObjectRequest::new(key("redirected"));
+    request.headers.append("x-example", "one".parse().unwrap());
+    request.headers.append("x-example", "two".parse().unwrap());
 
     client(&redirector)
-        .delete_object(DeleteObjectRequest::new(key("redirected")))
+        .delete_object(request)
         .await
         .expect_err("custom redirect is not followed");
 
-    assert_eq!(redirector.request_count().await, 1);
+    let requests = redirector.requests().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header_values("x-example"), ["one", "two"]);
+    assert!(
+        requests[0]
+            .header("authorization")
+            .is_some_and(|value| value.contains("x-example"))
+    );
     assert_eq!(credential_sink.request_count().await, 0);
 }
 

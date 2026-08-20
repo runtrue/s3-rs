@@ -4,6 +4,26 @@ This project records user-visible changes in this file and follows semantic vers
 
 ## [Unreleased]
 
+### Added
+
+- Every ordinary signed operation accepts caller-supplied request headers,
+  preserves repeated values, and signs them before retries or AWS region
+  correction. Managed multipart uploads provide separate create, upload-part,
+  complete, and abort header maps.
+
+### Changed
+
+- Generated, signing-owned, and transport-owned header collisions are rejected
+  instead of silently replacing either value. Custom header values are redacted
+  from request `Debug` output.
+
+### Migration
+
+- Multi-object delete entries now use `DeleteObjectIdentifier` rather than
+  `DeleteObjectRequest`; request-level headers belong on `DeleteObjectsRequest`.
+- URL-only presigning does not accept custom headers. A future presigned-request
+  API would need to return required headers together with the URL.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added

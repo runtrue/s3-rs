@@ -1,8 +1,8 @@
-use http::{HeaderMap, HeaderName, Method};
+use http::{HeaderName, Method};
 
 use crate::client::S3Client;
 use crate::client::object::{copy_source_header, insert_conditions};
-use crate::client::request::{insert_header, protocol_error};
+use crate::client::request::{insert_header, protocol_error, request_headers};
 use crate::error::S3Error;
 use crate::operation::{UploadPartCopyOutput, UploadPartCopyRequest};
 use crate::protocol::{
@@ -23,7 +23,7 @@ impl S3Client {
         &self,
         request: UploadPartCopyRequest,
     ) -> Result<UploadPartCopyOutput, S3Error> {
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(request.headers.clone())?;
         insert_header(
             &mut headers,
             HeaderName::from_static("x-amz-copy-source"),

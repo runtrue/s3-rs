@@ -113,13 +113,13 @@ pub(crate) fn parse_delete_objects(
 
 #[cfg(test)]
 mod tests {
-    use crate::operation::DeleteObjectRequest;
+    use crate::operation::DeleteObjectIdentifier;
 
     use super::*;
 
     #[test]
     fn delete_serialization_escapes_keys_and_honors_bounds() {
-        let request = DeleteObjectsRequest::new(vec![DeleteObjectRequest::new(
+        let request = DeleteObjectsRequest::new(vec![DeleteObjectIdentifier::new(
             ObjectKey::new("a<&b").unwrap(),
         )])
         .unwrap();
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn delete_serialization_retains_per_object_etag_conditions() {
-        let mut object = DeleteObjectRequest::new(ObjectKey::new("key").unwrap());
+        let mut object = DeleteObjectIdentifier::new(ObjectKey::new("key").unwrap());
         object.if_match = Some("\"etag\"".to_owned());
         let request = DeleteObjectsRequest::new(vec![object]).unwrap();
         let body = serialize_delete_objects(&request, 1_024).unwrap();

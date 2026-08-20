@@ -100,6 +100,67 @@ mod tests {
     use http::{HeaderName, HeaderValue};
 
     use super::*;
+    use crate::config::S3Config;
+    use crate::endpoint::Endpoint;
+
+    fn client_for_endpoint(endpoint: &str) -> S3Client {
+        let config = S3Config::builder()
+            .endpoint(Endpoint::new(endpoint).unwrap())
+            .bucket("bucket")
+            .build()
+            .unwrap();
+        S3Client::new(config).unwrap()
+    }
+
+    #[test]
+    fn region_redirect_authority_preserves_whitelisted_aws_endpoint_shapes() {
+        for (endpoint, region, expected) in [
+            (
+                "https://s3.amazonaws.com",
+                "eu-west-1",
+                "s3.eu-west-1.amazonaws.com",
+            ),
+            (
+                "https://s3.us-east-1.amazonaws.com",
+                "us-west-2",
+                "s3.us-west-2.amazonaws.com",
+            ),
+            (
+                "https://s3.dualstack.us-east-1.amazonaws.com",
+                "us-west-2",
+                "s3.dualstack.us-west-2.amazonaws.com",
+            ),
+            (
+                "https://s3-fips.us-east-1.amazonaws.com",
+                "us-gov-west-1",
+                "s3-fips.us-gov-west-1.amazonaws.com",
+            ),
+            (
+                "https://s3-fips.dualstack.us-east-1.amazonaws.com",
+                "us-gov-west-1",
+                "s3-fips.dualstack.us-gov-west-1.amazonaws.com",
+            ),
+            (
+                "https://s3.cn-north-1.amazonaws.com.cn",
+                "cn-northwest-1",
+                "s3.cn-northwest-1.amazonaws.com.cn",
+            ),
+        ] {
+            assert_eq!(
+                client_for_endpoint(endpoint).redirected_aws_authority(region),
+                Some(expected.to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn region_redirect_authority_rejects_non_aws_endpoints() {
+        assert_eq!(
+            client_for_endpoint("https://objects.example.com")
+                .redirected_aws_authority("us-west-2"),
+            None
+        );
+    }
 
     #[test]
     fn retry_after_in_the_past_means_no_delay() {

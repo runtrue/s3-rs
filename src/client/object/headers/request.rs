@@ -150,6 +150,19 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_metadata_headers_reject_custom_collisions() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amz-meta-owner", "custom".parse().unwrap());
+        let metadata = [("owner".to_owned(), "should-not-appear".to_owned())]
+            .into_iter()
+            .collect();
+        let error = insert_user_metadata(&mut headers, &metadata).unwrap_err();
+        assert!(error.message().contains("x-amz-meta-owner"));
+        assert!(!error.message().contains("custom"));
+        assert!(!error.message().contains("should-not-appear"));
+    }
+
+    #[test]
     fn conditional_dates_use_http_wire_format() {
         assert_eq!(
             format_http_date(datetime!(2024-03-12 10:15:30 UTC)),

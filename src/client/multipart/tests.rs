@@ -1,3 +1,5 @@
+use http::HeaderMap;
+
 use crate::operation::{
     Checksum, CreateMultipartUploadRequest, ListMultipartUploadsRequest, ObjectKey, PageSize,
     UploadId,
@@ -37,6 +39,7 @@ fn list_query_contains_paired_resume_markers_and_bounds() {
         key_marker: Some("last+key".to_owned()),
         upload_id_marker: Some(UploadId::new("upload/id=").unwrap()),
         max_uploads: PageSize::new(17).unwrap(),
+        headers: HeaderMap::new(),
     };
     assert_eq!(
         encoded(&list_query(&request).unwrap()),
@@ -65,6 +68,24 @@ fn list_parts_query_contains_upload_and_bounded_marker() {
 }
 
 #[test]
+fn custom_header_values_are_redacted() {
+    let mut request =
+        crate::ManagedMultipartUploadRequest::from_bytes(ObjectKey::new("key").unwrap(), "body");
+    request = request.with_metadata("metadata", "sentinel-metadata-value");
+    request.headers.upload_part.insert(
+        "x-amz-server-side-encryption-customer-key",
+        "sentinel-sse-c-key".parse().unwrap(),
+    );
+    let debug = format!("{request:?}");
+    assert!(debug.contains(r#"source: "bytes""#));
+    assert!(debug.contains(r#"user_metadata: ["metadata"]"#));
+    assert!(debug.contains(r#"upload_part: "<redacted>""#));
+    assert!(!debug.contains("body"));
+    assert!(!debug.contains("sentinel-metadata-value"));
+    assert!(!debug.contains("sentinel-sse-c-key"));
+}
+
+#[test]
 fn request_header_state_is_validated_before_transport() {
     let mut request = CreateMultipartUploadRequest::new(ObjectKey::new("key").unwrap());
     request
@@ -76,13 +97,13 @@ fn request_header_state_is_validated_before_transport() {
         sha256: Some("not-base64".to_owned()),
         ..Checksum::default()
     };
-    assert!(checksum_headers(&checksum).is_err());
+    assert!(checksum_headers(&checksum, HeaderMap::new()).is_err());
     let checksum = Checksum {
         crc32: Some("AAAAAA==".to_owned()),
         ..Checksum::default()
     };
     assert_eq!(
-        checksum_headers(&checksum)
+        checksum_headers(&checksum, HeaderMap::new())
             .unwrap()
             .get("x-amz-checksum-crc32")
             .unwrap(),

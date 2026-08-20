@@ -15,15 +15,20 @@ const MAX_REQUEST_BODY: usize = 16 * 1024 * 1024;
 pub struct CapturedRequest {
     pub method: String,
     pub target: String,
-    pub headers: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, Vec<String>>,
     pub body: Vec<u8>,
 }
 
 impl CapturedRequest {
     pub fn header(&self, name: &str) -> Option<&str> {
+        self.header_values(name).first().map(String::as_str)
+    }
+
+    pub fn header_values(&self, name: &str) -> &[String] {
         self.headers
             .get(&name.to_ascii_lowercase())
-            .map(String::as_str)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 }
 
@@ -162,10 +167,14 @@ async fn read_request(socket: &mut TcpStream) -> Option<CapturedRequest> {
     let mut headers = BTreeMap::new();
     for line in lines.filter(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':')?;
-        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+        headers
+            .entry(name.trim().to_ascii_lowercase())
+            .or_insert_with(Vec::new)
+            .push(value.trim().to_owned());
     }
     let content_length = headers
         .get("content-length")
+        .and_then(|values| values.first())
         .map_or(Some(0), |value| value.parse::<usize>().ok())?;
     if content_length > MAX_REQUEST_BODY {
         return None;
