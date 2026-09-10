@@ -101,15 +101,15 @@ pub use operation::{
     ChecksumType, CompleteMultipartUploadOutput, CompleteMultipartUploadRequest, CompletedPart,
     Conditions, CopyMetadataDirective, CopyObjectOutput, CopyObjectRequest, CopyPartRange,
     CopySource, CreateMultipartUploadOutput, CreateMultipartUploadRequest, DeleteError,
-    DeleteObjectOutput, DeleteObjectRequest, DeleteObjectsError, DeleteObjectsOutput,
-    DeleteObjectsRequest, DeletedObject, GetObjectOutput, GetObjectRequest, HeadObjectOutput,
-    HeadObjectRequest, ListMultipartUploadsOutput, ListMultipartUploadsRequest,
+    DeleteObjectIdentifier, DeleteObjectOutput, DeleteObjectRequest, DeleteObjectsError,
+    DeleteObjectsOutput, DeleteObjectsRequest, DeletedObject, GetObjectOutput, GetObjectRequest,
+    HeadObjectOutput, HeadObjectRequest, ListMultipartUploadsOutput, ListMultipartUploadsRequest,
     ListObjectsV2Output, ListObjectsV2Request, ListPartsOutput, ListPartsRequest, ListedObject,
-    ListedPart, ManagedMultipartUploadRequest, MultipartError, MultipartOptions, MultipartUpload,
-    MultipartUploadEntry, ObjectKey, ObjectKeyError, ObjectMetadata, ObjectOwner, PageSize,
-    PartNumber, PresignedUrl, PutObjectOutput, PutObjectRequest, RangeError, RequestIds, UploadId,
-    UploadIdError, UploadPartCopyOutput, UploadPartCopyRequest, UploadPartOutput,
-    UploadPartRequest,
+    ListedPart, ManagedMultipartHeaders, ManagedMultipartUploadRequest, MultipartError,
+    MultipartOptions, MultipartUpload, MultipartUploadEntry, ObjectKey, ObjectKeyError,
+    ObjectMetadata, ObjectOwner, PageSize, PartNumber, PresignedUrl, PutObjectOutput,
+    PutObjectRequest, RangeError, RequestIds, UploadId, UploadIdError, UploadPartCopyOutput,
+    UploadPartCopyRequest, UploadPartOutput, UploadPartRequest,
 };
 pub use retry::RetryPolicy;
 pub use stream::{ByteStream, ResponseStream};

@@ -1,8 +1,10 @@
+use http::HeaderMap;
+
 use super::{PartNumber, UploadId};
 use crate::operation::{Checksum, ChecksumType, ObjectKey, PageSize, RequestIds};
 
 /// Request for one page of in-progress multipart uploads.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default, derive_more::Debug, Eq, PartialEq)]
 pub struct ListMultipartUploadsRequest {
     /// Only uploads with keys beginning with this prefix are returned.
     pub prefix: Option<String>,
@@ -14,6 +16,18 @@ pub struct ListMultipartUploadsRequest {
     pub upload_id_marker: Option<UploadId>,
     /// Maximum uploads requested from the service.
     pub max_uploads: PageSize,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
+}
+
+impl ListMultipartUploadsRequest {
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
 }
 
 /// One in-progress multipart upload returned by the service.
@@ -68,7 +82,7 @@ pub struct ListMultipartUploadsOutput {
 }
 
 /// Request for one page of parts belonging to an in-progress upload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct ListPartsRequest {
     key: ObjectKey,
     upload_id: UploadId,
@@ -76,6 +90,10 @@ pub struct ListPartsRequest {
     pub part_number_marker: Option<PartNumber>,
     /// Maximum parts requested from the service.
     pub max_parts: PageSize,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl ListPartsRequest {
@@ -86,7 +104,14 @@ impl ListPartsRequest {
             upload_id,
             part_number_marker: None,
             max_parts: PageSize::default(),
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Returns the destination object key.

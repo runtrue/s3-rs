@@ -9,7 +9,8 @@ The client treats these values as sensitive:
 - access keys, secret keys, and session tokens;
 - authorization headers and presigned URL query strings;
 - multipart upload IDs; and
-- caller object data.
+- caller object data; and
+- caller-supplied request header values.
 
 Request IDs, sanitized service codes, object metadata, bucket names, and object keys do not contain signing secrets by definition, but they may still be sensitive under an application's data policy.
 
@@ -44,6 +45,13 @@ web-identity endpoints, ECS endpoints, and EC2 IMDSv2. Enable it only in a
 trusted workload environment, constrain metadata routing and IAM permissions,
 and treat configured profile/process paths and endpoint variables as trusted
 configuration. The default feature set makes none of those metadata calls.
+
+Caller-supplied request headers are included in the SigV4 signature and may
+contain secrets such as SSE-C keys. Request `Debug` implementations redact all
+values from the public custom-header maps. The maps themselves remain directly
+accessible, so applications are responsible for preventing their inspection,
+serialization, or logging. Generated protocol headers and signing- or
+transport-owned names cannot be replaced through a custom map.
 
 Presigned URLs are bearer credentials. `PresignedUrl` is redacted by default and requires `expose()` or `into_exposed()` to access the complete URL. Applications should:
 
@@ -105,7 +113,7 @@ SigV4 authenticates a request to the endpoint; it does not make a plain HTTP con
 - Use HTTPS for every remote endpoint.
 - Prefer short-lived, least-privilege credentials and prefix-restricted bucket policies.
 - Protect environment variables, process memory, core dumps, and temporary files.
-- Never log authorization headers, upload IDs, or exposed presigned URLs.
+- Never log authorization headers, custom request-header maps, upload IDs, or exposed presigned URLs.
 - Consume downloads to EOF before accepting length or checksum verification.
 - Add an application digest or authenticated format when storage-side integrity matters.
 - Serialize immutable multipart writers or publish a conditional manifest last.

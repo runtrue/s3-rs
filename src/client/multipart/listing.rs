@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use http::{HeaderMap, Method};
+use http::Method;
 
 use super::query::list_parts_query;
 use crate::client::S3Client;
-use crate::client::request::{OperationDeadline, protocol_error};
+use crate::client::request::{OperationDeadline, protocol_error, request_headers};
 use crate::error::{ErrorCategory, RetryClassification, S3Error};
 use crate::operation::{
     ListMultipartUploadsOutput, ListMultipartUploadsRequest, ListPartsOutput, ListPartsRequest,
@@ -124,7 +124,7 @@ impl S3Client {
                 Method::GET,
                 target,
                 &list_parts_query(request),
-                HeaderMap::new(),
+                request_headers(request.headers.clone())?,
                 None,
                 deadline,
             )

@@ -1,20 +1,21 @@
 use http::header::CONTENT_TYPE;
-use http::{HeaderMap, HeaderName, HeaderValue};
+use http::{HeaderMap, HeaderName};
 
-use crate::client::request::insert_header;
+use crate::client::request::{insert_header, request_headers};
 use crate::error::S3Error;
 use crate::operation::{Checksum, ChecksumAlgorithm, CreateMultipartUploadRequest, RequestIds};
 
 pub(super) fn create_headers(request: &CreateMultipartUploadRequest) -> Result<HeaderMap, S3Error> {
-    let mut headers = HeaderMap::new();
+    let mut headers = request_headers(request.headers.clone())?;
     if let Some(content_type) = &request.content_type {
         insert_header(&mut headers, CONTENT_TYPE, content_type)?;
     }
     if let Some(algorithm) = request.checksum_algorithm {
-        headers.insert(
+        insert_header(
+            &mut headers,
             HeaderName::from_static("x-amz-checksum-algorithm"),
-            HeaderValue::from_static(checksum_algorithm_name(algorithm)),
-        );
+            checksum_algorithm_name(algorithm),
+        )?;
     }
     if let Some(checksum_type) = &request.checksum_type {
         insert_header(
@@ -46,8 +47,11 @@ const fn checksum_algorithm_name(algorithm: ChecksumAlgorithm) -> &'static str {
     }
 }
 
-pub(super) fn checksum_headers(checksum: &Checksum) -> Result<HeaderMap, S3Error> {
-    let mut headers = HeaderMap::new();
+pub(super) fn checksum_headers(
+    checksum: &Checksum,
+    headers: HeaderMap,
+) -> Result<HeaderMap, S3Error> {
+    let mut headers = request_headers(headers)?;
     insert_checksum(
         &mut headers,
         "x-amz-checksum-crc32",

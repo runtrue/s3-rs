@@ -403,12 +403,96 @@ impl S3Client {
 #[cfg(test)]
 mod tests {
     use std::future::{Future as _, poll_fn};
+    use std::sync::Arc;
     use std::task::Poll;
     use std::time::Duration;
 
+    use http::{HeaderMap, Method};
+
+    use super::super::signing::SignedRequestInput;
     use super::OperationDeadline;
+    use crate::client::S3Client;
+    use crate::config::S3Config;
+    use crate::credentials::{Credentials, StaticCredentialsProvider};
+    use crate::endpoint::Endpoint;
     use crate::error::{ErrorCategory, TimeoutPhase};
+    use crate::signing::payload_sha256_hex;
     use crate::stream::ByteStream;
+
+    #[tokio::test]
+    async fn aws_region_correction_resigns_the_same_custom_headers_for_the_new_authority() {
+        let credentials = Credentials::new("access", "secret", None).unwrap();
+        let config = S3Config::builder()
+            .endpoint(Endpoint::for_aws_region("us-east-1").unwrap())
+            .region("us-east-1")
+            .bucket("bucket")
+            .credentials_provider(Arc::new(StaticCredentialsProvider::new(credentials)))
+            .build()
+            .unwrap();
+        let client = S3Client::new(config).unwrap();
+        let initial_target = client.operation_target(Some("key")).unwrap();
+        let corrected_authority = client.redirected_aws_authority("us-west-2").unwrap();
+        let corrected_target = initial_target.with_authority(&corrected_authority).unwrap();
+        let mut caller_headers = HeaderMap::new();
+        caller_headers.append("x-example", "one".parse().unwrap());
+        caller_headers.append("x-example", "two".parse().unwrap());
+        let payload_hash = payload_sha256_hex(&[]);
+
+        let initial = client
+            .signed_request(SignedRequestInput {
+                method: Method::GET,
+                target: &initial_target,
+                query: &[],
+                headers: caller_headers.clone(),
+                body: None,
+                payload_hash: &payload_hash,
+                signing_region: "us-east-1",
+            })
+            .await
+            .unwrap();
+        let corrected = client
+            .signed_request(SignedRequestInput {
+                method: Method::GET,
+                target: &corrected_target,
+                query: &[],
+                headers: caller_headers.clone(),
+                body: None,
+                payload_hash: &payload_hash,
+                signing_region: "us-west-2",
+            })
+            .await
+            .unwrap();
+
+        for (request, region, authority) in [
+            (&initial, "us-east-1", "s3.us-east-1.amazonaws.com"),
+            (&corrected, "us-west-2", "s3.us-west-2.amazonaws.com"),
+        ] {
+            assert_eq!(
+                request
+                    .headers()
+                    .get_all("x-example")
+                    .iter()
+                    .map(|value| value.to_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["one", "two"]
+            );
+            assert_eq!(request.uri().authority().unwrap().as_str(), authority);
+            let authorization = request.headers()[http::header::AUTHORIZATION]
+                .to_str()
+                .unwrap();
+            assert!(authorization.contains("Credential=access/20"));
+            assert!(authorization.contains(&format!("/{region}/s3/aws4_request")));
+            let signed_headers = authorization
+                .split("SignedHeaders=")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap();
+            assert!(signed_headers.split(';').any(|name| name == "x-example"));
+        }
+        assert_eq!(caller_headers.get_all("x-example").iter().count(), 2);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn body_preparation_obeys_the_operation_deadline() {
