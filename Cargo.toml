@@ -1,6 +1,6 @@
 [package]
 name = "s3-wire"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.97.1"
 description = "An async, streaming S3-compatible client for Rust"
@@ -9,7 +9,7 @@ repository = "https://github.com/runtrue/s3-rs"
 homepage = "https://github.com/runtrue/s3-rs"
 documentation = "https://docs.rs/s3-wire"
 readme = "README.md"
-keywords = ["s3", "object-storage", "aws", "minio", "sigv4"]
+keywords = ["s3", "s3-rs", "object-storage", "aws", "minio"]
 categories = ["api-bindings", "asynchronous", "network-programming"]
 include = [
     "/src/**",
