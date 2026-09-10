@@ -29,6 +29,7 @@ external-default-features = "allow"
 allow = []
 deny = []
 skip = [
+    { crate = "base64@0.22.1", reason = "hyper-util still uses the pre-0.23 base64 API" },
     { crate = "getrandom@0.2.17", reason = "ring still uses the pre-0.3 getrandom API" },
     { crate = "http@0.2.12", reason = "the optional AWS credential bridge's Smithy runtime still uses HTTP 0.2" },
     { crate = "http-body@0.4.6", reason = "the optional AWS credential bridge's Smithy runtime still uses HTTP Body 0.4" },
