@@ -4,6 +4,13 @@ This project records user-visible changes in this file and follows semantic vers
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-10
+
+### Changed
+
+- Added `s3-rs` to the crates.io keywords, replacing `sigv4` within the
+  five-keyword limit. Runtime behavior and public APIs are unchanged.
+
 ## [0.3.0] - 2026-09-10
 
 ### Added
