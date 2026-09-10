@@ -26,7 +26,7 @@ pub(super) fn root_is_error(body: &[u8], maximum: usize) -> Result<bool, Protoco
     loop {
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(start) | quick_xml::events::Event::Empty(start)) => {
-                return Ok(start.local_name().as_ref() == b"Error");
+                return Ok(start.local_name().as_ref() == "Error");
             }
             Ok(
                 quick_xml::events::Event::Decl(_)

@@ -47,12 +47,12 @@ pub(super) fn expect_root(
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(start) | quick_xml::events::Event::Empty(start)) => {
                 let local_name = start.local_name();
-                if expected.contains(&local_name.as_ref()) {
+                if expected.contains(&local_name.as_ref().as_bytes()) {
                     return Ok(());
                 }
                 return Err(ProtocolError::InvalidXml(format!(
                     "unexpected root element {}",
-                    String::from_utf8_lossy(local_name.as_ref())
+                    local_name.as_ref()
                 )));
             }
             Ok(

@@ -4,6 +4,8 @@ This project records user-visible changes in this file and follows semantic vers
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-10
+
 ### Added
 
 - Every ordinary signed operation accepts caller-supplied request headers,
@@ -17,8 +19,15 @@ This project records user-visible changes in this file and follows semantic vers
   instead of silently replacing either value. Custom header values are redacted
   from request `Debug` output.
 
+### Fixed
+
+- Updated XML root-name handling for `quick-xml` 0.42 and refreshed dependencies,
+  including the patched `h2` 0.4.16 release.
+
 ### Migration
 
+- Request types expose new `headers` fields. Code constructing request structs
+  directly must initialize these fields or use the provided constructors.
 - Multi-object delete entries now use `DeleteObjectIdentifier` rather than
   `DeleteObjectRequest`; request-level headers belong on `DeleteObjectsRequest`.
 - URL-only presigning does not accept custom headers. A future presigned-request

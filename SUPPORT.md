@@ -2,7 +2,7 @@
 
 ## Supported releases
 
-The latest published `0.2.x` release and the `main` branch receive correctness and security fixes. Older pre-1.0 releases are supported only when a maintainer explicitly announces a maintained release line. Security fixes may be released immediately as a patch version.
+The latest published `0.3.x` release and the `main` branch receive correctness and security fixes. Older pre-1.0 releases are supported only when a maintainer explicitly announces a maintained release line. Security fixes may be released immediately as a patch version.
 
 Rust 1.97.1 is the minimum supported Rust version (MSRV). CI tests that exact toolchain. The MSRV may be raised in a minor release before 1.0, with the change called out in the changelog; patch releases do not intentionally raise it.
 
