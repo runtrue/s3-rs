@@ -1,13 +1,19 @@
+use http::HeaderMap;
+
 use super::{CompletedPart, PartNumber, UploadId};
 use crate::operation::{Checksum, ObjectKey, RequestIds};
 
 /// Request to complete a multipart upload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct CompleteMultipartUploadRequest {
     /// Destination object key.
     pub key: ObjectKey,
     upload_id: UploadId,
     completed_parts: Vec<CompletedPart>,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl CompleteMultipartUploadRequest {
@@ -23,7 +29,14 @@ impl CompleteMultipartUploadRequest {
             key,
             upload_id,
             completed_parts,
+            headers: HeaderMap::new(),
         })
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Returns the validated, ordered completed parts.
@@ -57,16 +70,30 @@ pub struct CompleteMultipartUploadOutput {
 }
 
 /// Request to abort an in-progress multipart upload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct AbortMultipartUploadRequest {
     key: ObjectKey,
     upload_id: UploadId,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl AbortMultipartUploadRequest {
     /// Constructs an abort request from a validated upload identifier.
     pub fn new(key: ObjectKey, upload_id: UploadId) -> Self {
-        Self { key, upload_id }
+        Self {
+            key,
+            upload_id,
+            headers: HeaderMap::new(),
+        }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Returns the destination object key.

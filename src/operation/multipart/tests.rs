@@ -77,16 +77,23 @@ fn upload_id_and_requests_redact_formatting() {
     assert_eq!(format!("{upload_id:?}"), "UploadId([REDACTED])");
     assert!(!format!("{upload_id:?}").contains(upload_id.as_str()));
 
-    let request = UploadPartRequest::new(
+    let mut request = UploadPartRequest::new(
         ObjectKey::new("key").unwrap(),
         upload_id,
         PartNumber::new(1).unwrap(),
         ByteStream::from_bytes(b"secret body".as_slice()),
     );
+    request.headers.insert(
+        "x-amz-server-side-encryption-customer-key",
+        "sentinel-sse-c-key".parse().unwrap(),
+    );
     let debug = format!("{request:?}");
     assert!(debug.contains("UploadId([REDACTED])"));
+    assert!(debug.contains(r#"body: "<stream>""#));
+    assert!(debug.contains(r#"headers: "<redacted>""#));
     assert!(!debug.contains("do-not-log-this-value"));
     assert!(!debug.contains("secret body"));
+    assert!(!debug.contains("sentinel-sse-c-key"));
 }
 
 #[test]
@@ -107,16 +114,26 @@ fn request_constructors_retain_validated_upload_ids() {
 
 #[test]
 fn managed_request_debug_redacts_source_and_metadata_values() {
-    let request = ManagedMultipartUploadRequest::from_path(
+    let mut request = ManagedMultipartUploadRequest::from_path(
         ObjectKey::new("key").unwrap(),
         "/sensitive/source/path",
     )
     .with_metadata("name", "sensitive-value");
+    for headers in [
+        &mut request.headers.create,
+        &mut request.headers.upload_part,
+        &mut request.headers.complete,
+        &mut request.headers.abort,
+    ] {
+        headers.insert("x-secret", "sentinel-header-value".parse().unwrap());
+    }
     let rendered = format!("{request:?}");
-    assert!(rendered.contains("file"));
+    assert!(rendered.contains(r#"source: "file""#));
     assert!(rendered.contains("name"));
+    assert_eq!(rendered.matches(r#""<redacted>""#).count(), 4);
     assert!(!rendered.contains("/sensitive/source/path"));
     assert!(!rendered.contains("sensitive-value"));
+    assert!(!rendered.contains("sentinel-header-value"));
 }
 
 #[test]

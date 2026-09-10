@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
-use http::{HeaderMap, Method};
+use http::Method;
 
 use super::super::S3Client;
-use super::super::request::{OperationDeadline, protocol_error};
+use super::super::request::{OperationDeadline, protocol_error, request_headers};
 use super::headers::{parse_request_ids, push_optional_query};
 use crate::error::{ErrorCategory, RetryClassification, S3Error};
 use crate::operation::{ListObjectsV2Output, ListObjectsV2Request};
@@ -110,7 +110,7 @@ impl S3Client {
                 Method::GET,
                 target,
                 &query,
-                HeaderMap::new(),
+                request_headers(request.headers.clone())?,
                 None,
                 deadline,
             )

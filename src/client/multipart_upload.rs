@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, StreamExt as _};
+use http::HeaderMap;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -127,6 +128,7 @@ async fn run_multipart_upload(
     cleanup_timeout: Duration,
 ) -> Result<CompleteMultipartUploadOutput, S3Error> {
     let options = request.options();
+    let phase_headers = request.headers;
     let source = tokio::select! {
         biased;
         () = cancellation.cancelled() => return Err(cancelled()),
@@ -145,6 +147,7 @@ async fn run_multipart_upload(
     create.content_type = request.content_type;
     create.user_metadata = request.user_metadata;
     create.checksum_algorithm = request.checksum_algorithm;
+    create.headers = phase_headers.create;
     // Once creation starts, allow it to finish even after cancellation so a
     // successful response cannot be discarded together with the upload ID
     // needed for cleanup.
@@ -161,6 +164,7 @@ async fn run_multipart_upload(
             source: Arc::new(source),
             part_size,
             checksum_algorithm: request.checksum_algorithm,
+            headers: phase_headers.upload_part,
             deadline: transfer_deadline,
         },
         part_count,
@@ -173,10 +177,17 @@ async fn run_multipart_upload(
     let upload = match result {
         Ok(upload) => upload,
         Err(failure) => {
-            return fail_with_abort(&client, request.key, upload_id, failure).await;
+            return fail_with_abort(
+                &client,
+                request.key,
+                upload_id,
+                phase_headers.abort,
+                failure,
+            )
+            .await;
         }
     };
-    let completion = match CompleteMultipartUploadRequest::new(
+    let mut completion = match CompleteMultipartUploadRequest::new(
         upload.key().clone(),
         upload.upload_id().clone(),
         upload.completed_parts().to_vec(),
@@ -187,11 +198,13 @@ async fn run_multipart_upload(
                 &client,
                 request.key,
                 upload_id,
+                phase_headers.abort,
                 ManagedUploadFailure::new(S3Error::integrity(error.to_string()), cleanup_timeout),
             )
             .await;
         }
     };
+    completion.headers = phase_headers.complete;
 
     let completion = tokio::select! {
         biased;
@@ -209,6 +222,7 @@ async fn run_multipart_upload(
                 &client,
                 request.key,
                 upload_id,
+                phase_headers.abort,
                 ManagedUploadFailure::new(primary, cleanup_timeout),
             )
             .await
@@ -224,6 +238,7 @@ struct PartUploadContext {
     source: Arc<PreparedMultipartSource>,
     part_size: u64,
     checksum_algorithm: Option<crate::operation::ChecksumAlgorithm>,
+    headers: HeaderMap,
     deadline: OperationDeadline,
 }
 
@@ -318,13 +333,13 @@ async fn fail_with_abort(
     client: &S3Client,
     key: ObjectKey,
     upload_id: UploadId,
+    headers: HeaderMap,
     failure: ManagedUploadFailure,
 ) -> Result<CompleteMultipartUploadOutput, S3Error> {
+    let mut request = AbortMultipartUploadRequest::new(key, upload_id);
+    request.headers = headers;
     let abort = client
-        .abort_multipart_upload_with_deadline(
-            AbortMultipartUploadRequest::new(key, upload_id),
-            &failure.cleanup_deadline,
-        )
+        .abort_multipart_upload_with_deadline(request, &failure.cleanup_deadline)
         .await
         .map(|_| ());
     let cleanup = match (abort, failure.quiesce_failure) {
@@ -355,18 +370,17 @@ async fn upload_one_part(
         .map_err(|error| S3Error::unsupported(error.to_string()))?,
         None => crate::operation::Checksum::default(),
     };
+    let mut request = UploadPartRequest::new(
+        context.key,
+        context.upload_id,
+        number,
+        ByteStream::from_bytes(body),
+    )
+    .with_checksum(checksum);
+    request.headers = context.headers;
     let output = context
         .client
-        .upload_part_with_deadline(
-            UploadPartRequest::new(
-                context.key,
-                context.upload_id,
-                number,
-                ByteStream::from_bytes(body),
-            )
-            .with_checksum(checksum),
-            &context.deadline,
-        )
+        .upload_part_with_deadline(request, &context.deadline)
         .await?;
     CompletedPart::new(output.part_number.get(), output.e_tag)
         .map(|part| part.with_checksum(output.checksum))

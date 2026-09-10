@@ -2,12 +2,12 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::TryStreamExt;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MATCH, RANGE};
-use http::{HeaderMap, HeaderName, Method};
+use http::{HeaderName, Method};
 use http_body_util::BodyExt;
 use md5::{Digest as _, Md5};
 
 use super::super::S3Client;
-use super::super::request::protocol_error;
+use super::super::request::{protocol_error, request_headers};
 use super::headers::{
     copy_source_header, insert_conditions, insert_header, insert_optional_header,
     insert_upload_checksum, insert_user_metadata, merge_checksum, optional_query,
@@ -41,9 +41,10 @@ impl S3Client {
             user_metadata,
             conditions,
             checksum_algorithm,
+            headers,
         } = request;
         let prepared = deadline.prepare_body(body).await?;
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(headers)?;
         insert_optional_header(&mut headers, CONTENT_TYPE, content_type.as_deref())?;
         insert_conditions(&mut headers, &conditions, "")?;
         insert_user_metadata(&mut headers, &user_metadata)?;
@@ -80,7 +81,7 @@ impl S3Client {
     ///
     /// Returns an error when request validation, signing, transport, or header parsing fails.
     pub async fn get_object(&self, request: GetObjectRequest) -> Result<GetObjectOutput, S3Error> {
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(request.headers)?;
         insert_conditions(&mut headers, &request.conditions, "")?;
         insert_header(
             &mut headers,
@@ -132,7 +133,7 @@ impl S3Client {
         &self,
         request: HeadObjectRequest,
     ) -> Result<HeadObjectOutput, S3Error> {
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(request.headers)?;
         insert_conditions(&mut headers, &request.conditions, "")?;
         insert_header(
             &mut headers,
@@ -164,7 +165,7 @@ impl S3Client {
         &self,
         request: DeleteObjectRequest,
     ) -> Result<DeleteObjectOutput, S3Error> {
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(request.headers)?;
         insert_optional_header(&mut headers, IF_MATCH, request.if_match.as_deref())?;
         let query = optional_query("versionId", request.version_id.as_deref());
         let target = self.operation_target(Some(request.key.as_str()))?;
@@ -202,7 +203,7 @@ impl S3Client {
         let digest = Md5::digest(&xml);
         let content_md5 = BASE64_STANDARD.encode(digest);
         let prepared = deadline.prepare_body(ByteStream::from_bytes(xml)).await?;
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(request.headers)?;
         insert_header(&mut headers, CONTENT_TYPE, "application/xml")?;
         insert_header(
             &mut headers,
@@ -236,7 +237,7 @@ impl S3Client {
         &self,
         request: CopyObjectRequest,
     ) -> Result<CopyObjectOutput, S3Error> {
-        let mut headers = HeaderMap::new();
+        let mut headers = request_headers(request.headers)?;
         insert_header(
             &mut headers,
             HeaderName::from_static("x-amz-copy-source"),
