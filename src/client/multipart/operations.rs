@@ -1,5 +1,5 @@
+use http::Method;
 use http::header::{CONTENT_TYPE, ETAG};
-use http::{HeaderMap, HeaderValue, Method};
 
 use super::headers::{
     checksum_headers, create_headers, optional_header, request_ids, required_header,
@@ -7,7 +7,7 @@ use super::headers::{
 };
 use super::query::{create_query, list_query, upload_part_query, upload_query};
 use crate::client::S3Client;
-use crate::client::request::OperationDeadline;
+use crate::client::request::{OperationDeadline, insert_header, request_headers};
 use crate::error::S3Error;
 use crate::operation::{
     AbortMultipartUploadRequest, CompleteMultipartUploadOutput, CompleteMultipartUploadRequest,
@@ -86,7 +86,7 @@ impl S3Client {
     ) -> Result<UploadPartOutput, S3Error> {
         let target = self.operation_target(Some(request.key().as_str()))?;
         let query = upload_part_query(request.part_number().get(), request.upload_id());
-        let headers = checksum_headers(request.checksum())?;
+        let headers = checksum_headers(request.checksum(), request.headers.clone())?;
         let part_number = request.part_number();
         let body = deadline.prepare_body(request.into_body()).await?;
         let response = self
@@ -135,8 +135,8 @@ impl S3Client {
             serialize_complete_multipart_upload(&request, self.config().max_xml_response_size())
                 .map_err(crate::client::request::protocol_error)?;
         let body = deadline.prepare_body(ByteStream::from(document)).await?;
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/xml"));
+        let mut headers = request_headers(request.headers.clone())?;
+        insert_header(&mut headers, CONTENT_TYPE, "application/xml")?;
         let maximum = self.config().max_xml_response_size();
         let response = self
             .send_signed_collected_xml(
@@ -194,7 +194,7 @@ impl S3Client {
                 Method::DELETE,
                 target,
                 &query,
-                HeaderMap::new(),
+                request_headers(request.headers)?,
                 None,
                 deadline,
             )
@@ -231,7 +231,7 @@ impl S3Client {
                 Method::GET,
                 target,
                 &query,
-                HeaderMap::new(),
+                request_headers(request.headers.clone())?,
                 None,
                 deadline,
             )

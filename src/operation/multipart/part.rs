@@ -1,4 +1,6 @@
-use std::{fmt, num::NonZeroU16};
+use std::num::NonZeroU16;
+
+use http::HeaderMap;
 
 use super::{MultipartError, UploadId};
 use crate::operation::{Checksum, Conditions, CopySource, ObjectKey, RequestIds};
@@ -26,12 +28,18 @@ impl PartNumber {
 }
 
 /// Request to upload one multipart part.
+#[derive(derive_more::Debug)]
 pub struct UploadPartRequest {
     key: ObjectKey,
     upload_id: UploadId,
     part_number: PartNumber,
+    #[debug("{:?}", "<stream>")]
     body: ByteStream,
     checksum: Checksum,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl UploadPartRequest {
@@ -48,7 +56,14 @@ impl UploadPartRequest {
             part_number,
             body,
             checksum: Checksum::default(),
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Returns the destination object key.
@@ -90,19 +105,6 @@ impl UploadPartRequest {
     /// Consumes the request and returns its body.
     pub fn into_body(self) -> ByteStream {
         self.body
-    }
-}
-
-impl fmt::Debug for UploadPartRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("UploadPartRequest")
-            .field("key", &self.key)
-            .field("upload_id", &self.upload_id)
-            .field("part_number", &self.part_number)
-            .field("body", &"<stream>")
-            .field("checksum", &self.checksum)
-            .finish()
     }
 }
 
@@ -151,7 +153,7 @@ impl CopyPartRange {
 }
 
 /// Request to populate a multipart part from an existing S3 object.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct UploadPartCopyRequest {
     destination: ObjectKey,
     upload_id: UploadId,
@@ -162,6 +164,10 @@ pub struct UploadPartCopyRequest {
     pub source_range: Option<CopyPartRange>,
     /// Preconditions evaluated against the source object.
     pub source_conditions: Conditions,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl UploadPartCopyRequest {
@@ -179,7 +185,14 @@ impl UploadPartCopyRequest {
             source,
             source_range: None,
             source_conditions: Conditions::default(),
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Returns the destination object key.

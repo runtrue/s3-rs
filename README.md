@@ -79,6 +79,33 @@ async fn put_then_get() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Every ordinary request accepts additional headers through its public `headers`
+map. They are included in the SigV4 signature, and repeated values are retained:
+
+```rust,no_run
+use http::{HeaderMap, HeaderValue};
+use s3_wire::{GetObjectRequest, ObjectKey, S3Client};
+
+async fn get_with_headers(client: &S3Client) -> Result<(), Box<dyn std::error::Error>> {
+    let mut headers = HeaderMap::new();
+    headers.append(
+        "x-amz-request-payer",
+        HeaderValue::from_static("requester"),
+    );
+    let request = GetObjectRequest::new(ObjectKey::new("reports/latest.json")?)
+        .with_headers(headers);
+    client.get_object(request).await?;
+    Ok(())
+}
+```
+
+A custom header cannot replace a header generated from a typed request field,
+and signing- or transport-owned headers such as `host`, `authorization`,
+`x-amz-date`, and `content-length` are rejected. Errors identify only the
+conflicting name. Header values may contain secrets: request `Debug` output
+redacts them, but applications remain responsible for direct access to or
+logging of the public map.
+
 Run the complete CRUD, range, listing, and conditional-write example with:
 
 ```sh
@@ -158,18 +185,38 @@ quiesces in-flight part requests before aborting:
 ```rust,no_run
 use std::time::Duration;
 
-use s3_wire::{ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, S3Client};
+use http::HeaderValue;
+use s3_wire::{
+    ManagedMultipartHeaders, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, S3Client,
+};
 
 async fn upload_large_file(client: &S3Client) -> Result<(), Box<dyn std::error::Error>> {
     let options = MultipartOptions::new(8 * 1024 * 1024, 4)?
         .with_transfer_timeout(Duration::from_secs(15 * 60))?;
-    let request =
-        ManagedMultipartUploadRequest::from_path(
-            ObjectKey::new("artifacts/archive.tar")?,
-            "archive.tar",
-        )
-        .with_content_type("application/x-tar")
-        .with_options(options);
+    let mut headers = ManagedMultipartHeaders::default();
+    headers.create.insert(
+        "x-amz-server-side-encryption-customer-algorithm",
+        HeaderValue::from_static("AES256"),
+    );
+    headers.upload_part.insert(
+        "x-amz-server-side-encryption-customer-algorithm",
+        HeaderValue::from_static("AES256"),
+    );
+    headers.complete.insert(
+        "x-amz-request-payer",
+        HeaderValue::from_static("requester"),
+    );
+    headers.abort.insert(
+        "x-amz-request-payer",
+        HeaderValue::from_static("requester"),
+    );
+    let request = ManagedMultipartUploadRequest::from_path(
+        ObjectKey::new("artifacts/archive.tar")?,
+        "archive.tar",
+    )
+    .with_content_type("application/x-tar")
+    .with_options(options)
+    .with_headers(headers);
 
     client.multipart_upload(request).await?;
     Ok(())

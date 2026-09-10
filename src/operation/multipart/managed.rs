@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bytes::Bytes;
+use http::HeaderMap;
 
 use super::{CompletedPart, MultipartError, UploadId};
 use crate::operation::{ChecksumAlgorithm, ChecksumType, ObjectKey, RequestIds};
@@ -136,18 +136,23 @@ impl Default for MultipartOptions {
 }
 
 /// Request to initiate a multipart upload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, derive_more::Debug, Eq, PartialEq)]
 pub struct CreateMultipartUploadRequest {
     /// Destination object key.
     pub key: ObjectKey,
     /// Optional object media type.
     pub content_type: Option<String>,
     /// User-defined object metadata.
+    #[debug("{:?}", self.user_metadata.keys().collect::<Vec<_>>())]
     pub user_metadata: BTreeMap<String, String>,
     /// Checksum algorithm applied to uploaded parts.
     pub checksum_algorithm: Option<ChecksumAlgorithm>,
     /// How S3 should derive the completed object's checksum from its parts.
     pub checksum_type: Option<ChecksumType>,
+    /// Additional request headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub headers: HeaderMap,
 }
 
 impl CreateMultipartUploadRequest {
@@ -159,7 +164,14 @@ impl CreateMultipartUploadRequest {
             user_metadata: BTreeMap::new(),
             checksum_algorithm: None,
             checksum_type: None,
+            headers: HeaderMap::new(),
         }
+    }
+
+    /// Replaces the request's additional headers.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 }
 
@@ -218,18 +230,57 @@ pub(crate) enum MultipartUploadSource {
     File(PathBuf),
 }
 
+/// Phase-specific headers for a managed multipart upload.
+///
+/// Content metadata, tagging, ACL, and SSE-KMS headers typically belong on
+/// `create`. SSE-C headers must usually be repeated on `create` and
+/// `upload_part`. Completion checksums and conditions belong on `complete`,
+/// while requester-pays, expected-owner, and abort conditions belong on
+/// `abort`. AWS support varies by bucket type and feature.
+#[derive(Clone, Default, derive_more::Debug, Eq, PartialEq)]
+pub struct ManagedMultipartHeaders {
+    /// Headers sent when creating the upload. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub create: HeaderMap,
+    /// Headers cloned into every part. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub upload_part: HeaderMap,
+    /// Completion headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub complete: HeaderMap,
+    /// Abort headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    #[debug("{:?}", "<redacted>")]
+    pub abort: HeaderMap,
+}
+
 /// Request for a bounded, automatically cleaned-up multipart upload.
 ///
 /// In-memory sources retain the caller's complete byte buffer for the duration
 /// of the operation. File sources retain at most the derived in-flight part
 /// byte bound in memory; their immutable snapshot is disk-backed.
+#[derive(derive_more::Debug)]
 pub struct ManagedMultipartUploadRequest {
     pub(crate) key: ObjectKey,
+    #[debug(
+        "{:?}",
+        match self.source {
+            MultipartUploadSource::Bytes(_) => "bytes",
+            MultipartUploadSource::File(_) => "file",
+        }
+    )]
     pub(crate) source: MultipartUploadSource,
     pub(crate) content_type: Option<String>,
+    #[debug("{:?}", self.user_metadata.keys().collect::<Vec<_>>())]
     pub(crate) user_metadata: BTreeMap<String, String>,
     pub(crate) options: MultipartOptions,
     pub(crate) checksum_algorithm: Option<ChecksumAlgorithm>,
+    /// Phase-specific additional headers. Values are signed and repeated values are preserved.
+    /// Generated-name collisions are errors; signing- and transport-owned headers are rejected.
+    pub headers: ManagedMultipartHeaders,
 }
 
 impl ManagedMultipartUploadRequest {
@@ -242,6 +293,7 @@ impl ManagedMultipartUploadRequest {
             user_metadata: BTreeMap::new(),
             options: MultipartOptions::default(),
             checksum_algorithm: None,
+            headers: ManagedMultipartHeaders::default(),
         }
     }
 
@@ -257,7 +309,14 @@ impl ManagedMultipartUploadRequest {
             user_metadata: BTreeMap::new(),
             options: MultipartOptions::default(),
             checksum_algorithm: None,
+            headers: ManagedMultipartHeaders::default(),
         }
+    }
+
+    /// Replaces the upload's phase-specific additional headers.
+    pub fn with_headers(mut self, headers: ManagedMultipartHeaders) -> Self {
+        self.headers = headers;
+        self
     }
 
     /// Sets the object's media type.
@@ -303,29 +362,6 @@ impl ManagedMultipartUploadRequest {
     /// Returns the destination object key.
     pub const fn key(&self) -> &ObjectKey {
         &self.key
-    }
-}
-
-impl fmt::Debug for ManagedMultipartUploadRequest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ManagedMultipartUploadRequest")
-            .field("key", &self.key)
-            .field(
-                "source",
-                &match self.source {
-                    MultipartUploadSource::Bytes(_) => "bytes",
-                    MultipartUploadSource::File(_) => "file",
-                },
-            )
-            .field("content_type", &self.content_type)
-            .field("options", &self.options)
-            .field("checksum_algorithm", &self.checksum_algorithm)
-            .field(
-                "user_metadata_names",
-                &self.user_metadata.keys().collect::<Vec<_>>(),
-            )
-            .finish()
     }
 }
 

@@ -14,8 +14,8 @@ use bytes::Bytes;
 use futures_util::StreamExt as _;
 use s3_wire::{
     AbortMultipartUploadRequest, AddressingStyle, ByteStream, Credentials, CredentialsProvider,
-    DeleteObjectRequest, DeleteObjectsRequest, Endpoint, ErrorCategory, GetObjectRequest,
-    HeadObjectRequest, ListMultipartUploadsRequest, ListObjectsV2Request,
+    DeleteObjectIdentifier, DeleteObjectRequest, DeleteObjectsRequest, Endpoint, ErrorCategory,
+    GetObjectRequest, HeadObjectRequest, ListMultipartUploadsRequest, ListObjectsV2Request,
     ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, ObjectKeyError, PutObjectRequest,
     S3Client, S3Config, S3Error, StaticCredentialsProvider, TimeoutPhase,
 };
@@ -234,7 +234,7 @@ impl ArtifactStore {
                 continue;
             };
             if !live.contains(&digest) {
-                unreachable.push(DeleteObjectRequest::new(object.key));
+                unreachable.push(DeleteObjectIdentifier::new(object.key));
             }
         }
 

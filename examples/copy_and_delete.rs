@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use s3_wire::{
-    ByteStream, CopyObjectRequest, CopySource, DeleteObjectRequest, DeleteObjectsRequest,
+    ByteStream, CopyObjectRequest, CopySource, DeleteObjectIdentifier, DeleteObjectsRequest,
     ObjectKey, PutObjectRequest,
 };
 
@@ -36,8 +36,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let deleted = client
         .delete_objects(DeleteObjectsRequest::new(vec![
-            DeleteObjectRequest::new(source),
-            DeleteObjectRequest::new(destination),
+            DeleteObjectIdentifier::new(source),
+            DeleteObjectIdentifier::new(destination),
         ])?)
         .await?;
     if !deleted.errors.is_empty() {

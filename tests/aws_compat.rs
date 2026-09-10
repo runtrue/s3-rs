@@ -17,9 +17,9 @@ use hyper_util::rt::TokioExecutor;
 use s3_wire::{
     AbortMultipartUploadRequest, AddressingStyle, ByteRange, ByteStream,
     CompleteMultipartUploadRequest, CompletedPart, CreateMultipartUploadRequest, Credentials,
-    DeleteObjectRequest, DeleteObjectsRequest, Endpoint, ErrorCategory, GetObjectRequest,
-    HeadObjectRequest, ListObjectsV2Request, ObjectKey, PartNumber, PutObjectRequest, S3Client,
-    S3Config, StaticCredentialsProvider, UploadId, UploadPartRequest,
+    DeleteObjectIdentifier, DeleteObjectRequest, DeleteObjectsRequest, Endpoint, ErrorCategory,
+    GetObjectRequest, HeadObjectRequest, ListObjectsV2Request, ObjectKey, PartNumber,
+    PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider, UploadId, UploadPartRequest,
 };
 
 const FIRST_PART_SIZE: usize = 5 * 1024 * 1024;
@@ -256,7 +256,7 @@ async fn cleanup_aws(client: &S3Client, cleanup: CleanupState) -> TestResult {
             batch
                 .iter()
                 .cloned()
-                .map(DeleteObjectRequest::new)
+                .map(DeleteObjectIdentifier::new)
                 .collect(),
         )?;
         match client.delete_objects(request).await {

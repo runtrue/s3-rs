@@ -15,8 +15,8 @@ pub use listing::{
 };
 pub(crate) use managed::MultipartUploadSource;
 pub use managed::{
-    CreateMultipartUploadOutput, CreateMultipartUploadRequest, ManagedMultipartUploadRequest,
-    MultipartOptions, MultipartUpload,
+    CreateMultipartUploadOutput, CreateMultipartUploadRequest, ManagedMultipartHeaders,
+    ManagedMultipartUploadRequest, MultipartOptions, MultipartUpload,
 };
 pub use part::{
     CompletedPart, CopyPartRange, PartNumber, UploadPartCopyOutput, UploadPartCopyRequest,
