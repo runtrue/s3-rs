@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-rust-s3 = { version = "=0.37.2", default-features = false, features = ["tokio-rustls-tls"] }
+rust-s3 = { version = "=0.38.0", default-features = false, features = ["tokio-rustls-tls"] }
 
 [profile.release]
 opt-level = 3
