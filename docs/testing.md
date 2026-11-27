@@ -82,7 +82,7 @@ Run the reproducible local suites with:
 ./scripts/test-s3-compat.sh seaweedfs
 ```
 
-The runner requires Docker and `curl`. It starts the selected provider from an immutable image digest on a random loopback port, creates an isolated bucket, runs the ignored integration suite, and removes the container on exit. CI runs the same cases against MinIO, RustFS, and SeaweedFS. [`tests/s3_compat.md`](../tests/s3_compat.md) records the exact releases and digests.
+The runner requires `curl`, plus `shasum` for MinIO or Docker for RustFS and SeaweedFS. It starts the pinned release on a random loopback port, runs the ignored integration suite with an isolated bucket, and cleans up on exit. CI uses the same runner. [`tests/s3_compat.md`](../tests/s3_compat.md) records the release pins and supported platforms.
 
 To use an already provisioned S3-compatible instance:
 
