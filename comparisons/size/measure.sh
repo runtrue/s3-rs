@@ -55,7 +55,7 @@ measure_project() {
             | if length == 1 then .[0] else error("expected one client dependency") end
             | if (.req | startswith("=")) then . else error("expected an exact client version") end
             | {version: ((.req | ltrimstr("=")) + (if .path then " (local path)" else "" end)),
-               features: ["default-features=\(.uses_default_features)"] + .features}')
+               features: (["default-features=\(.uses_default_features)"] + .features)}')
 
     jq -n \
         --arg name "$project" \
