@@ -1,24 +1,35 @@
+use http::header::CONTENT_LENGTH;
 use http::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::error::S3Error;
 
-const PROTECTED_HEADERS: [&str; 7] = [
+const OWNED_HEADERS: [&str; 6] = [
     "host",
     "authorization",
     "x-amz-date",
     "x-amz-security-token",
     "x-amz-content-sha256",
-    "content-length",
     "transfer-encoding",
 ];
 
 pub(in crate::client) fn request_headers(headers: HeaderMap) -> Result<HeaderMap, S3Error> {
-    for name in PROTECTED_HEADERS {
-        if headers.contains_key(name) {
-            return Err(header_collision(name));
-        }
+    reject_owned_headers(&headers)?;
+    // The transport derives `content-length` from the request body.
+    if headers.contains_key(CONTENT_LENGTH) {
+        return Err(header_collision(CONTENT_LENGTH.as_str()));
     }
     Ok(headers)
+}
+
+/// Rejects signing- and transport-owned names, which callers can never supply.
+pub(in crate::client) fn reject_owned_headers(headers: &HeaderMap) -> Result<(), S3Error> {
+    match OWNED_HEADERS
+        .into_iter()
+        .find(|name| headers.contains_key(*name))
+    {
+        Some(name) => Err(header_collision(name)),
+        None => Ok(()),
+    }
 }
 
 pub(in crate::client) fn insert_header(

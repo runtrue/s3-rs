@@ -20,9 +20,9 @@ pub use object::{
     DeleteObjectIdentifier, DeleteObjectOutput, DeleteObjectRequest, DeleteObjectsError,
     DeleteObjectsOutput, DeleteObjectsRequest, DeletedObject, GetObjectOutput, GetObjectRequest,
     HeadObjectOutput, HeadObjectRequest, ListObjectsV2Output, ListObjectsV2Request, ListedObject,
-    ObjectMetadata, ObjectOwner, PageSize, PutObjectOutput, PutObjectRequest,
+    ObjectMetadata, ObjectOwner, PageSize, PresignPutRequest, PutObjectOutput, PutObjectRequest,
 };
 pub use types::{
     ByteRange, Checksum, ChecksumAlgorithm, ChecksumType, Conditions, ObjectKey, ObjectKeyError,
-    PresignedUrl, RangeError, RequestIds,
+    PresignedRequest, PresignedUrl, RangeError, RequestIds,
 };

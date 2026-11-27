@@ -107,9 +107,10 @@ pub use operation::{
     ListObjectsV2Output, ListObjectsV2Request, ListPartsOutput, ListPartsRequest, ListedObject,
     ListedPart, ManagedMultipartHeaders, ManagedMultipartUploadRequest, MultipartError,
     MultipartOptions, MultipartUpload, MultipartUploadEntry, ObjectKey, ObjectKeyError,
-    ObjectMetadata, ObjectOwner, PageSize, PartNumber, PresignedUrl, PutObjectOutput,
-    PutObjectRequest, RangeError, RequestIds, UploadId, UploadIdError, UploadPartCopyOutput,
-    UploadPartCopyRequest, UploadPartOutput, UploadPartRequest,
+    ObjectMetadata, ObjectOwner, PageSize, PartNumber, PresignPutRequest, PresignedRequest,
+    PresignedUrl, PutObjectOutput, PutObjectRequest, RangeError, RequestIds, UploadId,
+    UploadIdError, UploadPartCopyOutput, UploadPartCopyRequest, UploadPartOutput,
+    UploadPartRequest,
 };
 pub use retry::RetryPolicy;
 pub use stream::{ByteStream, ResponseStream};

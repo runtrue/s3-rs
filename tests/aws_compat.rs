@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue};
 use http::{Method, Request};
 use http_body_util::{BodyExt as _, Full};
 use hyper_rustls::HttpsConnectorBuilder;
@@ -19,7 +20,8 @@ use s3_wire::{
     CompleteMultipartUploadRequest, CompletedPart, CreateMultipartUploadRequest, Credentials,
     DeleteObjectIdentifier, DeleteObjectRequest, DeleteObjectsRequest, Endpoint, ErrorCategory,
     GetObjectRequest, HeadObjectRequest, ListObjectsV2Request, ObjectKey, PartNumber,
-    PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider, UploadId, UploadPartRequest,
+    PresignPutRequest, PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider, UploadId,
+    UploadPartRequest,
 };
 
 const FIRST_PART_SIZE: usize = 5 * 1024 * 1024;
@@ -201,10 +203,22 @@ async fn exercise_presigning(
     cleanup.keys.push(object.clone());
     let payload = Bytes::from_static(b"presigned request body");
 
-    let put_url = client
-        .presigned_put(&object, Duration::from_secs(300))
+    let mut put_headers = HeaderMap::new();
+    put_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+    put_headers.insert(CONTENT_LENGTH, HeaderValue::from(payload.len()));
+    let put_request = client
+        .presigned_put_with_headers(
+            PresignPutRequest::new(object.clone(), Duration::from_secs(300))
+                .with_headers(put_headers),
+        )
         .await?;
-    let response = unsigned_http(Method::PUT, put_url.expose(), payload.clone()).await?;
+    let response = unsigned_http(
+        put_request.method().clone(),
+        put_request.url().expose(),
+        put_request.headers(),
+        payload.clone(),
+    )
+    .await?;
     require(
         response.is_empty(),
         "presigned PUT returned an unexpected body",
@@ -213,7 +227,13 @@ async fn exercise_presigning(
     let get_url = client
         .presigned_get(&object, Duration::from_secs(300))
         .await?;
-    let response = unsigned_http(Method::GET, get_url.expose(), Bytes::new()).await?;
+    let response = unsigned_http(
+        Method::GET,
+        get_url.expose(),
+        &HeaderMap::new(),
+        Bytes::new(),
+    )
+    .await?;
     require(
         response == payload,
         "presigned GET returned different bytes",
@@ -221,7 +241,12 @@ async fn exercise_presigning(
     Ok(())
 }
 
-async fn unsigned_http(method: Method, url: &str, body: Bytes) -> TestResult<Bytes> {
+async fn unsigned_http(
+    method: Method,
+    url: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> TestResult<Bytes> {
     let connector = HttpsConnectorBuilder::new()
         .with_webpki_roots()
         .https_or_http()
@@ -229,11 +254,11 @@ async fn unsigned_http(method: Method, url: &str, body: Bytes) -> TestResult<Byt
         .build();
     let client: HttpClient<_, Full<Bytes>> =
         HttpClient::builder(TokioExecutor::new()).build(connector);
-    let request = Request::builder()
-        .method(method)
-        .uri(url)
-        .body(Full::new(body))?;
-    let response = client.request(request).await?;
+    let mut request = Request::builder().method(method).uri(url);
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = client.request(request.body(Full::new(body))?).await?;
     require(
         response.status().is_success(),
         "presigned HTTP request returned a non-success status",

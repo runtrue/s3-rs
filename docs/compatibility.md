@@ -67,7 +67,7 @@ The in-process suite covers wire shape, retry and replay decisions, response lim
 
 ### S3-compatible services
 
-The integration suite runs the same cases against MinIO `RELEASE.2025-09-07T16-13-09Z`, RustFS `1.0.0-beta.9`, and SeaweedFS `4.40`, each pinned by manifest digest. It covers:
+The integration suite runs the same cases against MinIO `RELEASE.2025-09-07T16-13-09Z`, RustFS `1.0.0-beta.9`, and SeaweedFS `4.40`. The runner verifies the MinIO release binary by SHA-256 and pins the other two by image manifest digest. It covers:
 
 - create, read, inspect, copy, list, and delete flows;
 - conditional writes, ranges, metadata, empty objects, large objects, and unusual keys;

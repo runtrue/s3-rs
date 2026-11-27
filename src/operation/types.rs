@@ -1,5 +1,6 @@
 use std::{fmt, num::NonZeroU64, str::FromStr};
 
+use http::{HeaderMap, Method};
 use secrecy::{ExposeSecret, SecretString};
 
 /// Maximum encoded byte length accepted by S3 for an object key.
@@ -269,6 +270,43 @@ impl fmt::Debug for PresignedUrl {
 impl fmt::Display for PresignedUrl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("[REDACTED PRESIGNED URL]")
+    }
+}
+
+/// A presigned request together with the headers bound into its signature.
+///
+/// `host` is signed from the URL's authority and is not part of
+/// [`PresignedRequest::headers`]. `Debug` output redacts the URL and header values.
+#[derive(Clone, derive_more::Debug)]
+pub struct PresignedRequest {
+    method: Method,
+    url: PresignedUrl,
+    #[debug("{:?}", "<redacted>")]
+    headers: HeaderMap,
+}
+
+impl PresignedRequest {
+    pub(crate) fn new(method: Method, url: PresignedUrl, headers: HeaderMap) -> Self {
+        Self {
+            method,
+            url,
+            headers,
+        }
+    }
+
+    /// HTTP method the signed URL accepts.
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    /// The presigned URL.
+    pub fn url(&self) -> &PresignedUrl {
+        &self.url
+    }
+
+    /// Headers the request must carry, unchanged, for the signature to verify.
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
     }
 }
 

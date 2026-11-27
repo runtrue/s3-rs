@@ -4,6 +4,13 @@ This project records user-visible changes in this file and follows semantic vers
 
 ## [Unreleased]
 
+### Added
+
+- `S3Client::presigned_put_with_headers` accepts a `PresignPutRequest` and
+  returns a `PresignedRequest` with the method, redacted URL, and required
+  upload headers. The signature can bind headers such as `content-type` and
+  an exact `content-length`.
+
 ## [0.3.1] - 2026-09-10
 
 ### Changed

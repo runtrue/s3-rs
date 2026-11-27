@@ -195,6 +195,39 @@ fn presigns_put_and_encodes_session_token() {
 }
 
 #[test]
+fn presigned_put_signature_binds_header_values() {
+    let credentials = SigningCredentials::new(ACCESS_KEY, SECRET_KEY, None);
+    let sign = |content_type: &str, content_length: &str| {
+        let headers = [
+            Header::new("host", "storage.example.test"),
+            Header::new("content-type", content_type),
+            Header::new("content-length", content_length),
+        ];
+        sign_presigned(
+            &credentials,
+            SigningScope::new("us-east-1", "s3"),
+            &PresigningRequest {
+                method: "PUT",
+                uri_path: SigningPath::raw("/bucket/key"),
+                query: &[],
+                headers: &headers,
+                expires: Duration::from_mins(1),
+                payload_hash: None,
+            },
+            datetime!(2026-01-02 03:04:05 UTC),
+        )
+        .unwrap()
+        .as_str()
+        .to_owned()
+    };
+
+    let baseline = sign("text/plain", "12");
+    assert!(baseline.contains("X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost"));
+    assert_ne!(baseline, sign("text/plain", "13"));
+    assert_ne!(baseline, sign("text/html", "12"));
+}
+
+#[test]
 fn rejects_reserved_input_and_invalid_expiry() {
     let credentials = SigningCredentials::new(ACCESS_KEY, SECRET_KEY, None);
     let headers = [Header::new("host", "example.com")];

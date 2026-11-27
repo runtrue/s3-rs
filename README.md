@@ -261,6 +261,47 @@ async fn share_download(client: &S3Client) -> Result<(), Box<dyn std::error::Err
 fn send_to_authorized_caller(_url: &str) {}
 ```
 
+Use `presigned_put(&key, expires)` for a PUT URL that signs only the host.
+To bind upload headers to the signature, use `presigned_put_with_headers` and
+send its returned headers unchanged with the URL. The header map can include a
+single `content-length` in canonical decimal form (`0` or a number without
+leading zeros). Volatile transport headers such as `connection` and
+`user-agent` are rejected.
+
+```rust,no_run
+use std::time::Duration;
+
+use http::{HeaderMap, HeaderValue};
+use s3_wire::{ObjectKey, PresignPutRequest, S3Client};
+
+async fn share_upload(client: &S3Client) -> Result<(), Box<dyn std::error::Error>> {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", HeaderValue::from_static("image/png"));
+    headers.insert("content-length", HeaderValue::from_static("1024"));
+    let request = client
+        .presigned_put_with_headers(
+            PresignPutRequest::new(ObjectKey::new("artifacts/icon.png")?, Duration::from_secs(300))
+                .with_headers(headers),
+        )
+        .await?;
+
+    // The URL and signed headers must reach the uploader together, unchanged.
+    deliver_put(
+        request.method().as_str(),
+        request.url().expose(),
+        request.headers(),
+    );
+    Ok(())
+}
+
+fn deliver_put(_method: &str, _url: &str, _headers: &HeaderMap) {}
+```
+
+A signed `content-type` does not validate the body bytes, and a signed
+`content-length` is an exact byte count rather than a maximum; the body itself
+remains `UNSIGNED-PAYLOAD`. `PresignedRequest` `Debug` output redacts the URL
+and the header values.
+
 Presigned URLs are bearer credentials. Keep their lifetime short and do not place exposed URLs in logs, analytics, or error messages.
 
 ## Error handling

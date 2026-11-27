@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{StreamExt as _, stream};
-use http::header::HOST;
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderMap, HeaderValue};
 use http::{Method, Request, StatusCode, Uri};
 use http_body_util::{BodyExt as _, Full};
 use hyper::client::conn::http1;
@@ -18,7 +18,8 @@ use s3_wire::{
     CompletedPart, CreateMultipartUploadRequest, Credentials, DeleteObjectRequest, Endpoint,
     ErrorCategory, GetObjectRequest, HeadObjectRequest, ListMultipartUploadsRequest,
     ListObjectsV2Request, ManagedMultipartUploadRequest, MultipartOptions, ObjectKey, PageSize,
-    PartNumber, PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider, UploadPartRequest,
+    PartNumber, PresignPutRequest, PutObjectRequest, S3Client, S3Config, StaticCredentialsProvider,
+    UploadPartRequest,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpStream;
@@ -331,23 +332,70 @@ async fn large_one_shot_stream_and_presigned_urls() -> TestResult {
 
     let presigned_key = object_key(format!("{}/signed URL +☃", namespace("presign")));
     let payload = Bytes::from_static(b"presigned request body");
-    let put_url = client
-        .presigned_put(&presigned_key, Duration::from_secs(60))
+    let mut put_headers = HeaderMap::new();
+    put_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+    put_headers.insert(CONTENT_LENGTH, HeaderValue::from(payload.len()));
+    let put_request = client
+        .presigned_put_with_headers(
+            PresignPutRequest::new(presigned_key.clone(), Duration::from_secs(60))
+                .with_headers(put_headers),
+        )
         .await?;
-    let (status, _) = raw_http(Method::PUT, put_url.expose(), payload.clone()).await?;
+
+    let mut mismatched = put_request.headers().clone();
+    mismatched.insert(CONTENT_TYPE, HeaderValue::from_static("text/x-changed"));
+    let (status, _) = raw_http(
+        put_request.method().clone(),
+        put_request.url().expose(),
+        &mismatched,
+        payload.clone(),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let shorter_body = payload.slice(1..);
+    let mut shorter_headers = put_request.headers().clone();
+    shorter_headers.insert(CONTENT_LENGTH, HeaderValue::from(shorter_body.len()));
+    let (status, _) = raw_http(
+        put_request.method().clone(),
+        put_request.url().expose(),
+        &shorter_headers,
+        shorter_body,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = raw_http(
+        put_request.method().clone(),
+        put_request.url().expose(),
+        put_request.headers(),
+        payload.clone(),
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK);
 
     let get_url = client
         .presigned_get(&presigned_key, Duration::from_secs(60))
         .await?;
-    let (status, downloaded) = raw_http(Method::GET, get_url.expose(), Bytes::new()).await?;
+    let (status, downloaded) = raw_http(
+        Method::GET,
+        get_url.expose(),
+        &HeaderMap::new(),
+        Bytes::new(),
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(downloaded, payload);
     delete_if_present(&client, presigned_key).await;
     Ok(())
 }
 
-async fn raw_http(method: Method, url: &str, body: Bytes) -> TestResult<(StatusCode, Bytes)> {
+async fn raw_http(
+    method: Method,
+    url: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> TestResult<(StatusCode, Bytes)> {
     let uri: Uri = url.parse()?;
     let authority = uri
         .authority()
@@ -362,12 +410,14 @@ async fn raw_http(method: Method, url: &str, body: Bytes) -> TestResult<(StatusC
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    let request = Request::builder()
+    let mut request = Request::builder()
         .method(method)
         .uri(request_target)
-        .header(HOST, authority.as_str())
-        .body(Full::new(body))?;
-    let response = sender.send_request(request).await?;
+        .header(HOST, authority.as_str());
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = sender.send_request(request.body(Full::new(body))?).await?;
     let status = response.status();
     let bytes = response.into_body().collect().await?.to_bytes();
     Ok((status, bytes))

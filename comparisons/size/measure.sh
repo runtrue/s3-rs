@@ -49,41 +49,27 @@ measure_project() {
         --manifest-path "$manifest" | sed 's/ (\*)$//' | sort -u \
         | awk 'END { print NR - 1 }')
     binary_path="$project_target/release/$binary"
+    client=$(cargo metadata --locked --no-deps --format-version 1 --manifest-path "$manifest" \
+        | jq -ce '.packages[0].dependencies
+            | map(select(.kind == null))
+            | if length == 1 then .[0] else error("expected one client dependency") end
+            | if (.req | startswith("=")) then . else error("expected an exact client version") end
+            | {version: ((.req | ltrimstr("=")) + (if .path then " (local path)" else "" end)),
+               features: (["default-features=\(.uses_default_features)"] + .features)}')
 
     jq -n \
         --arg name "$project" \
-        --arg version "$(project_version "$project")" \
-        --argjson features "$(project_features "$project")" \
+        --argjson client "$client" \
         --argjson dependencies "$dependency_count" \
         --argjson clean_seconds "$(<"$clean_time")" \
         --argjson incremental_seconds "$(<"$incremental_time")" \
         --argjson binary_bytes "$(stat -c '%s' "$binary_path")" \
         --arg binary_sha256 "$(sha256sum "$binary_path" | awk '{print $1}')" \
-        '{name: $name, version: $version, features: $features,
+        '{name: $name, version: $client.version, features: $client.features,
           dependency_packages: $dependencies,
           clean_build_seconds: $clean_seconds,
           incremental_rebuild_seconds: $incremental_seconds,
           binary_bytes: $binary_bytes, binary_sha256: $binary_sha256}'
-}
-
-project_version() {
-    case "$1" in
-        s3-wire|s3-wire-http2)
-            version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repository_dir/Cargo.toml" | head -1)
-            printf '%s (local path)\n' "$version"
-            ;;
-        aws-sdk-s3) printf '%s\n' '1.138.1' ;;
-        rust-s3) printf '%s\n' '0.37.2' ;;
-    esac
-}
-
-project_features() {
-    case "$1" in
-        s3-wire) jq -cn '["default-features=false"]' ;;
-        s3-wire-http2) jq -cn '["default-features=false","http2"]' ;;
-        aws-sdk-s3) jq -cn '["default-features=false","behavior-version-latest","default-https-client","http-1x","rt-tokio","rustls"]' ;;
-        rust-s3) jq -cn '["default-features=false","tokio-rustls-tls"]' ;;
-    esac
 }
 
 measured_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -154,7 +140,7 @@ jq -n \
     jq -r '.projects[] | "| \(.name) | \(.version) | `\(.features | join(", "))` | \(.dependency_packages) | \(.clean_build_seconds) s | \(.incremental_rebuild_seconds) s | \(.binary_bytes) bytes |"' "$result_file"
     printf '\n## Method\n\n'
     printf 'Each standalone binary constructs one client and retains a HEAD-object operation for the same region, bucket, and key without sending it. '
-    printf 'The two external versions were the newest crates.io releases when resolved on the measurement date and are exact-version pinned. '
+    printf 'The two external crates use exact version pins. '
     printf 'Every manifest disables default features and lists available TLS/runtime features explicitly; `s3-wire` does not currently feature-gate its runtime or TLS backend. '
     printf 'All four use `opt-level=3`, thin LTO, one codegen unit, `panic="abort"`, symbol stripping, and incremental compilation. '
     printf "The clean timing removes only that project's target directory; registry sources and the Cargo download cache remain warm. "
