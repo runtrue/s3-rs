@@ -80,8 +80,8 @@ pub struct PresignPutRequest {
     /// Lifetime of the generated URL.
     pub expires: Duration,
     /// Additional headers bound into the signature. Repeated values are preserved.
-    /// Signing- and transport-owned headers are rejected, except a single decimal
-    /// `content-length`.
+    /// Signing-owned headers and volatile transport headers are rejected.
+    /// A single canonical decimal `content-length` is allowed.
     #[debug("{:?}", "<redacted>")]
     pub headers: HeaderMap,
 }

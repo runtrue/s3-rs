@@ -26,15 +26,27 @@ impl S3Client {
         self.presign("GET", key, &[], expires).await
     }
 
+    /// Generates a presigned PUT URL whose standard formatting is redacted.
+    ///
+    /// Use [`Self::presigned_put_with_headers`] to bind upload headers to the
+    /// signature.
+    pub async fn presigned_put(
+        &self,
+        key: &ObjectKey,
+        expires: Duration,
+    ) -> Result<PresignedUrl, S3Error> {
+        self.presign("PUT", key, &[], expires).await
+    }
+
     /// Generates a presigned PUT request bound to the request's headers.
     ///
     /// The uploader must send [`PresignedRequest::headers`] unchanged with the
-    /// URL. Signing- and transport-owned headers are rejected, except that a
-    /// single decimal `content-length` may be signed; it binds the exact upload
-    /// size, not a maximum, and browsers cannot set it explicitly. The body is
-    /// signed as `UNSIGNED-PAYLOAD`, so a signed `content-type` does not
-    /// validate the body bytes.
-    pub async fn presigned_put(
+    /// URL. Signing-owned headers and volatile transport headers are rejected.
+    /// A single `content-length` in canonical decimal form (`0` or a number
+    /// without leading zeros) may bind the exact upload size. Browsers cannot
+    /// set it explicitly. The body is signed as `UNSIGNED-PAYLOAD`, so a signed
+    /// `content-type` does not validate the body bytes.
+    pub async fn presigned_put_with_headers(
         &self,
         request: PresignPutRequest,
     ) -> Result<PresignedRequest, S3Error> {
@@ -201,16 +213,35 @@ fn presign_headers<'a>(
     authority: &'a str,
 ) -> Result<Vec<Header<'a>>, S3Error> {
     reject_owned_headers(headers)?;
+    for name in [
+        "connection",
+        "x-amzn-trace-id",
+        "user-agent",
+        "keep-alive",
+        "te",
+        "trailer",
+        "upgrade",
+        "proxy-authorization",
+        "proxy-authenticate",
+    ] {
+        if headers.contains_key(name) {
+            return Err(S3Error::configuration(format!(
+                "presigned request cannot bind volatile header `{name}`"
+            )));
+        }
+    }
     let mut lengths = headers.get_all(CONTENT_LENGTH).iter();
     if let Some(length) = lengths.next()
         && (lengths.next().is_some()
             // `u64::from_str` alone would accept a leading `+`.
             || !length.to_str().is_ok_and(|text| {
-                text.bytes().all(|byte| byte.is_ascii_digit()) && text.parse::<u64>().is_ok()
+                text.bytes().all(|byte| byte.is_ascii_digit())
+                    && (text == "0" || !text.starts_with('0'))
+                    && text.parse::<u64>().is_ok()
             }))
     {
         return Err(S3Error::configuration(
-            "presigned content-length must be a single decimal value",
+            "presigned content-length must be a single canonical decimal value",
         ));
     }
     std::iter::once(Ok(Header::new("host", authority)))
@@ -245,23 +276,35 @@ mod tests {
 
     async fn presign_put(headers: HeaderMap) -> Result<PresignedRequest, S3Error> {
         test_client()
-            .presigned_put(
+            .presigned_put_with_headers(
                 PresignPutRequest::new(ObjectKey::new("key").unwrap(), Duration::from_secs(60))
                     .with_headers(headers),
             )
             .await
     }
 
-    fn signed_headers(request: &PresignedRequest) -> &str {
-        let url = request.url().expose();
+    fn signed_headers(url: &PresignedUrl) -> &str {
+        let url = url.expose();
         let start = url.find("X-Amz-SignedHeaders=").unwrap();
         url[start..].split('&').next().unwrap()
     }
 
     #[tokio::test]
-    async fn presigned_put_binds_signed_headers() {
+    async fn presigned_put_returns_a_host_only_signed_url() {
+        let key = ObjectKey::new("key").unwrap();
+        let url: PresignedUrl = test_client()
+            .presigned_put(&key, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        assert_eq!(signed_headers(&url), "X-Amz-SignedHeaders=host");
+        assert!(url.expose().contains("X-Amz-Signature="));
+    }
+
+    #[tokio::test]
+    async fn presigned_put_with_headers_binds_signed_headers() {
         let request = presign_put(HeaderMap::new()).await.unwrap();
-        assert_eq!(signed_headers(&request), "X-Amz-SignedHeaders=host");
+        assert_eq!(signed_headers(request.url()), "X-Amz-SignedHeaders=host");
 
         let mut headers = HeaderMap::new();
         headers.insert("content-type", HeaderValue::from_static("text/plain"));
@@ -273,13 +316,13 @@ mod tests {
         assert_eq!(request.method(), Method::PUT);
         assert_eq!(request.headers(), &headers);
         assert_eq!(
-            signed_headers(&request),
+            signed_headers(request.url()),
             "X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost%3Bx-amz-meta-tag"
         );
     }
 
     #[tokio::test]
-    async fn presigned_put_debug_is_redacted() {
+    async fn presigned_put_with_headers_debug_is_redacted() {
         let mut headers = HeaderMap::new();
         headers.insert("x-amz-meta-tag", HeaderValue::from_static("sentinel-value"));
         let input = PresignPutRequest::new(ObjectKey::new("key").unwrap(), Duration::from_secs(60))
@@ -292,7 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn presigned_put_rejects_owned_and_invalid_headers() {
+    async fn presigned_put_with_headers_rejects_owned_and_invalid_headers() {
         for name in ["host", "x-amz-date", "transfer-encoding"] {
             let mut headers = HeaderMap::new();
             headers.insert(name, HeaderValue::from_static("sentinel-value"));
@@ -301,13 +344,21 @@ mod tests {
             assert!(!error.message().contains("sentinel-value"));
         }
 
-        let mut invalid_lengths = ["", " 5", "+5", "12.0", "99999999999999999999999"]
-            .map(|value| {
-                let mut headers = HeaderMap::new();
-                headers.insert("content-length", HeaderValue::try_from(value).unwrap());
-                headers
-            })
-            .to_vec();
+        let mut invalid_lengths = [
+            "",
+            " 5",
+            "+5",
+            "12.0",
+            "00",
+            "05",
+            "99999999999999999999999",
+        ]
+        .map(|value| {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", HeaderValue::try_from(value).unwrap());
+            headers
+        })
+        .to_vec();
         let mut repeated = HeaderMap::new();
         repeated.append("content-length", HeaderValue::from_static("1"));
         repeated.append("content-length", HeaderValue::from_static("1"));
@@ -316,7 +367,7 @@ mod tests {
             let error = presign_put(headers).await.unwrap_err();
             assert_eq!(
                 error.message(),
-                "presigned content-length must be a single decimal value"
+                "presigned content-length must be a single canonical decimal value"
             );
         }
 
@@ -324,6 +375,29 @@ mod tests {
         headers.insert("x-amz-meta-tag", HeaderValue::from_bytes(&[0xFF]).unwrap());
         let error = presign_put(headers).await.unwrap_err();
         assert_eq!(error.message(), "request contains an invalid header value");
+    }
+
+    #[tokio::test]
+    async fn presigned_put_with_headers_rejects_volatile_headers() {
+        for name in [
+            "connection",
+            "x-amzn-trace-id",
+            "user-agent",
+            "keep-alive",
+            "te",
+            "trailer",
+            "upgrade",
+            "proxy-authorization",
+            "proxy-authenticate",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, HeaderValue::from_static("sentinel-value"));
+            let error = presign_put(headers).await.unwrap_err();
+            assert_eq!(
+                error.message(),
+                format!("presigned request cannot bind volatile header `{name}`")
+            );
+        }
     }
 
     #[tokio::test]

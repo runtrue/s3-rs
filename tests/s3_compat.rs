@@ -336,7 +336,7 @@ async fn large_one_shot_stream_and_presigned_urls() -> TestResult {
     put_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
     put_headers.insert(CONTENT_LENGTH, HeaderValue::from(payload.len()));
     let put_request = client
-        .presigned_put(
+        .presigned_put_with_headers(
             PresignPutRequest::new(presigned_key.clone(), Duration::from_secs(60))
                 .with_headers(put_headers),
         )
@@ -349,6 +349,18 @@ async fn large_one_shot_stream_and_presigned_urls() -> TestResult {
         put_request.url().expose(),
         &mismatched,
         payload.clone(),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let shorter_body = payload.slice(1..);
+    let mut shorter_headers = put_request.headers().clone();
+    shorter_headers.insert(CONTENT_LENGTH, HeaderValue::from(shorter_body.len()));
+    let (status, _) = raw_http(
+        put_request.method().clone(),
+        put_request.url().expose(),
+        &shorter_headers,
+        shorter_body,
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);

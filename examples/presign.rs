@@ -26,10 +26,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let get = client.presigned_get(&key, expires).await?;
     deliver_to_authorized_caller("GET", get.expose());
 
-    let put = client
-        .presigned_put(PresignPutRequest::new(key.clone(), expires))
-        .await?;
-    deliver_to_authorized_caller(put.method().as_str(), put.url().expose());
+    let put = client.presigned_put(&key, expires).await?;
+    deliver_to_authorized_caller("PUT", put.expose());
 
     // Bind the exact upload headers into the signature: a known media type and
     // byte count. The uploader must send these values with the URL.
@@ -37,7 +35,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     upload_headers.insert("content-type", HeaderValue::from_static("image/png"));
     upload_headers.insert("content-length", HeaderValue::from_static("4096"));
     let request = client
-        .presigned_put(PresignPutRequest::new(key, expires).with_headers(upload_headers))
+        .presigned_put_with_headers(
+            PresignPutRequest::new(key, expires).with_headers(upload_headers),
+        )
         .await?;
     deliver_upload_to_authorized_caller(
         request.method().as_str(),

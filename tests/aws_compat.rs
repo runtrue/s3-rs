@@ -207,7 +207,7 @@ async fn exercise_presigning(
     put_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
     put_headers.insert(CONTENT_LENGTH, HeaderValue::from(payload.len()));
     let put_request = client
-        .presigned_put(
+        .presigned_put_with_headers(
             PresignPutRequest::new(object.clone(), Duration::from_secs(300))
                 .with_headers(put_headers),
         )

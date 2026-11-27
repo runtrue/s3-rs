@@ -60,13 +60,15 @@ Presigned URLs are bearer credentials. `PresignedUrl` is redacted by default and
 - exclude it from logs, traces, analytics, and error messages; and
 - treat it as compromised after accidental disclosure.
 
-`presigned_put` signs the caller-supplied upload headers of its
+`presigned_put_with_headers` signs the caller-supplied upload headers of its
 `PresignPutRequest` into the URL and returns a `PresignedRequest` whose `Debug`
 output redacts both the URL and the header values. The bound headers must reach
 the uploader with the URL and be sent unchanged, because the signature covers
 them. A signed `content-type` declares the media type and is not validated
 against the body, and a signed `content-length` is an exact byte count rather
-than a limit. Browser JavaScript cannot set `content-length` explicitly, so
+than a limit. Its value must be `0` or a decimal number without leading zeros.
+Volatile transport headers are rejected because intermediaries can change
+them. Browser JavaScript cannot set `content-length` explicitly, so
 verify that the chosen browser upload path sets it automatically and that the
 endpoint's CORS policy permits PUT with the required headers before relying on
 this API.

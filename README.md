@@ -239,9 +239,8 @@ stale-upload cleanup.
 ## Listing and presigning
 
 `list_objects_v2_all` follows continuation tokens up to a caller-supplied page
-limit. Presigned GET, HEAD, DELETE, multipart-create, part-upload, and
-multipart-abort requests return a redacted `PresignedUrl`, while presigned PUT
-returns a `PresignedRequest`:
+limit. Presigned GET, PUT, HEAD, DELETE, multipart-create, part-upload, and
+multipart-abort requests return a redacted `PresignedUrl`:
 
 ```rust,no_run
 use std::time::Duration;
@@ -262,9 +261,12 @@ async fn share_download(client: &S3Client) -> Result<(), Box<dyn std::error::Err
 fn send_to_authorized_caller(_url: &str) {}
 ```
 
-`presigned_put` signs the request's headers into the URL. Send the returned
-headers unchanged, together with the URL. Unlike ordinary requests, a single
-decimal `content-length` is accepted:
+Use `presigned_put(&key, expires)` for a PUT URL that signs only the host.
+To bind upload headers to the signature, use `presigned_put_with_headers` and
+send its returned headers unchanged with the URL. The header map can include a
+single `content-length` in canonical decimal form (`0` or a number without
+leading zeros). Volatile transport headers such as `connection` and
+`user-agent` are rejected.
 
 ```rust,no_run
 use std::time::Duration;
@@ -277,7 +279,7 @@ async fn share_upload(client: &S3Client) -> Result<(), Box<dyn std::error::Error
     headers.insert("content-type", HeaderValue::from_static("image/png"));
     headers.insert("content-length", HeaderValue::from_static("1024"));
     let request = client
-        .presigned_put(
+        .presigned_put_with_headers(
             PresignPutRequest::new(ObjectKey::new("artifacts/icon.png")?, Duration::from_secs(300))
                 .with_headers(headers),
         )

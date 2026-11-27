@@ -6,15 +6,10 @@ This project records user-visible changes in this file and follows semantic vers
 
 ### Added
 
-- `PresignPutRequest` and `PresignedRequest`. Headers such as `content-type`
-  and an exact `content-length` can be signed into a presigned PUT.
-
-### Changed
-
-- `S3Client::presigned_put` takes a `PresignPutRequest` and returns a
-  `PresignedRequest` holding the method, redacted URL, and the headers the
-  uploader must send. Migrate `presigned_put(&key, expires)` to
-  `presigned_put(PresignPutRequest::new(key, expires))`.
+- `S3Client::presigned_put_with_headers` accepts a `PresignPutRequest` and
+  returns a `PresignedRequest` with the method, redacted URL, and required
+  upload headers. The signature can bind headers such as `content-type` and
+  an exact `content-length`.
 
 ## [0.3.1] - 2026-09-10
 
